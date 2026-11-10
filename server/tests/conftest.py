@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from dockerserver.api import create_app
 from dockerserver.auth import issue_token
 from dockerserver.config import Settings
-from dockerserver.models import User
+from dockerserver.models import TERMINAL_STATUSES, User
 
 
 def docker_available():
@@ -57,7 +57,7 @@ def wait_done(client, tok, job_id, timeout=90):
     end = time.time() + timeout
     while time.time() < end:
         j = client.get(f"/jobs/{job_id}", headers=auth(tok)).json()
-        if j["status"] in ("succeeded", "failed", "timeout", "stopped", "error"):
+        if j["status"] in TERMINAL_STATUSES:
             return j
         time.sleep(0.5)
     raise AssertionError(f"job {job_id} did not finish: {j}")

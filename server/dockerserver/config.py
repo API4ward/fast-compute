@@ -22,6 +22,12 @@ class Settings:
     tmp_size: str = field(default_factory=lambda: _env("TMP_SIZE", "64m"))
     git_timeout: int = field(default_factory=lambda: int(_env("GIT_TIMEOUT", "120")))
     container_user: str = "65534:65534"  # nobody:nogroup
+    # Credits given to every new user (hours of 1 CPU + 256 MB).
+    default_credit_hours: float = field(default_factory=lambda: float(_env("DEFAULT_CREDIT_HOURS", "1000")))
+    # How often a running job is sampled (docker stats) and checked against the balance.
+    monitor_interval: float = field(default_factory=lambda: float(_env("MONITOR_INTERVAL", "10")))
+    # A job may start only if the balance covers this many seconds at its size.
+    min_start_seconds: int = field(default_factory=lambda: int(_env("MIN_START_SECONDS", "60")))
 
     @property
     def db_url(self) -> str:

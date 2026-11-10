@@ -8,18 +8,25 @@ Isolation applied to every job container:
   * runs as nobody (65534); no host bind mounts; no Docker socket
   * network_mode "none" unless the job was allowed network
   * wall-clock timeout, after which the container is killed
+
+While running, the job is sampled with `docker stats` every monitor_interval
+seconds and stopped (status out_of_credits) when the user's balance runs out.
+Each job is charged once, when it ends (see billing.py).
 """
 import logging
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import docker
+import requests
 from docker.errors import DockerException, ImageNotFound, NotFound
 from docker.types import LogConfig, Mount
 
 from .config import Settings
-from .models import ACTIVE_STATUSES, Job, utcnow
+from .billing import available_uh, bill_job, cost_uh
+from .models import ACTIVE_STATUSES, TERMINAL_STATUSES, Job, utcnow
 from .workspace import WorkspaceError, build_workspace, git_clone
 
 log = logging.getLogger("dockerserver.runner")
@@ -85,6 +92,10 @@ class JobRunner:
                 job.status, job.error = "error", "server restarted while job was active"
                 job.finished_at = job.finished_at or utcnow()
             db.commit()
+            # Charge everything that finished but was never billed (incl. the above).
+            for (jid,) in db.query(Job.id).filter(Job.billed.is_(False),
+                                                  Job.status.in_(TERMINAL_STATUSES)).all():
+                bill_job(db, jid)
         try:
             for c in self.client.containers.list(all=True, filters={"label": LABEL}):
                 c.remove(force=True)
@@ -163,16 +174,17 @@ class JobRunner:
             )
             if self._stopping(job_id):
                 raise _Stopped()
+            with self.Session() as db:
+                job = db.get(Job, job_id)
+                need = cost_uh(cpus, mem_mb, s.min_start_seconds)
+                if available_uh(db, job.user_id) < need:
+                    raise _NoCredits()
             self._update(job_id, container_id=container.id)
             container.start()
             self._update(job_id, status="running", started_at=utcnow())
 
-            timed_out = False
-            try:
-                result = container.wait(timeout=timeout)
-                exit_code = result.get("StatusCode")
-            except Exception:  # read timeout from the Docker API
-                timed_out = True
+            exit_code, reason = self._monitor(job_id, container, timeout)
+            if reason:
                 try:
                     container.kill()
                 except DockerException:
@@ -184,12 +196,15 @@ class JobRunner:
             oom = container.attrs.get("State", {}).get("OOMKilled", False)
             if self._stopping(job_id):
                 status = "stopped"
-            elif timed_out:
-                status = "timeout"
+            elif reason:
+                status = reason
             else:
                 status = "succeeded" if exit_code == 0 else "failed"
             self._update(job_id, status=status, exit_code=exit_code, finished_at=finished,
                          error="out of memory (OOM killed)" if oom else None)
+        except _NoCredits:
+            self._update(job_id, status="out_of_credits", finished_at=utcnow(),
+                         error="not enough credits to start this job")
         except _Stopped:
             self._update(job_id, status="stopped", finished_at=utcnow())
         except WorkspaceError as e:
@@ -206,6 +221,57 @@ class JobRunner:
                         pass
             with self._lock:
                 self._stop_requested.discard(job_id)
+            self._bill(job_id)
+
+    def _bill(self, job_id):
+        try:
+            with self.Session() as db:
+                bill_job(db, job_id)
+        except Exception:  # noqa: BLE001 - retried by recover() on next start
+            log.exception("billing job %s failed", job_id)
+
+    def _monitor(self, job_id, container, timeout):
+        """Wait for exit; every monitor_interval sample stats and check credits.
+        Returns (exit_code, reason) where reason is None, "timeout" or "out_of_credits"."""
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None, "timeout"
+            try:
+                res = container.wait(timeout=min(remaining, self.settings.monitor_interval))
+                return res.get("StatusCode"), None
+            except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
+                pass
+            container.reload()
+            if container.status not in ("running", "created", "restarting"):
+                continue  # exited between calls; next wait() returns at once
+            self._sample(job_id, container)
+            with self.Session() as db:
+                job = db.get(Job, job_id)
+                if available_uh(db, job.user_id) <= 0:
+                    return None, "out_of_credits"
+
+    def _sample(self, job_id, container):
+        try:
+            st = container.stats(stream=False)
+        except DockerException:
+            return
+        cpu = _cpu_percent(st)
+        mem = _mem_mb(st)
+        if cpu is None and mem is None:
+            return
+        with self.Session() as db:
+            job = db.get(Job, job_id)
+            n = job.stat_samples or 0
+            if cpu is not None:
+                job.cpu_avg_pct = ((job.cpu_avg_pct or 0) * n + cpu) / (n + 1)
+                job.cpu_peak_pct = max(job.cpu_peak_pct or 0, cpu)
+            if mem is not None:
+                job.mem_avg_mb = ((job.mem_avg_mb or 0) * n + mem) / (n + 1)
+                job.mem_peak_mb = max(job.mem_peak_mb or 0, mem)
+            job.stat_samples = n + 1
+            db.commit()
 
     def _ensure_image(self, image):
         try:
@@ -223,3 +289,30 @@ class JobRunner:
 
 class _Stopped(Exception):
     pass
+
+
+class _NoCredits(Exception):
+    pass
+
+
+def _cpu_percent(st) -> float | None:
+    """CPU use in % of one core (100 = one full core), as `docker stats` computes it."""
+    try:
+        cpu, pre = st["cpu_stats"], st["precpu_stats"]
+        cpu_delta = cpu["cpu_usage"]["total_usage"] - pre["cpu_usage"]["total_usage"]
+        sys_delta = cpu["system_cpu_usage"] - pre["system_cpu_usage"]
+        ncpu = cpu.get("online_cpus") or len(cpu["cpu_usage"].get("percpu_usage") or [1])
+        if sys_delta <= 0 or cpu_delta < 0:
+            return None
+        return cpu_delta / sys_delta * ncpu * 100.0
+    except (KeyError, TypeError):
+        return None
+
+
+def _mem_mb(st) -> float | None:
+    try:
+        ms = st["memory_stats"]
+        usage = ms["usage"] - ms.get("stats", {}).get("inactive_file", 0)
+        return max(usage, 0) / (1024 * 1024)
+    except (KeyError, TypeError):
+        return None

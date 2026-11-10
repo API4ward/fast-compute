@@ -41,6 +41,9 @@ Environment variables (all optional):
 | `DOCKERSERVER_MAX_LOG_BYTES` | 1 MB | saved log tail per job |
 | `DOCKERSERVER_PIDS_LIMIT` | 256 | max processes per container |
 | `DOCKERSERVER_TMP_SIZE` | `64m` | size of the `/tmp` tmpfs |
+| `DOCKERSERVER_DEFAULT_CREDIT_HOURS` | `1000` | credits granted to each new user |
+| `DOCKERSERVER_MONITOR_INTERVAL` | `10` | seconds between `docker stats` samples / credit checks |
+| `DOCKERSERVER_MIN_START_SECONDS` | `60` | a job starts only if the balance covers this long at its size |
 
 ## API
 
@@ -56,6 +59,9 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | POST | `/admin/users/{id}/disable` · `/enable` | disable/enable (disabled users' tokens stop working) |
 | GET/POST | `/admin/users/{id}/tokens` | list / issue tokens |
 | DELETE | `/admin/tokens/{id}` | revoke a token |
+| POST | `/admin/users/{id}/credits` | `{hours, reason: topup\|adjust, note}` (negative hours deduct) |
+| GET | `/admin/users/{id}/ledger` | the user's balance history |
+| GET | `/admin/usage?start=&end=` | per-user totals (jobs, run seconds, CPU-hours, GB-hours, cost) for jobs started in the range |
 
 **Jobs** (users see only their own; admins can pass `?all=true` and open any job)
 
@@ -66,7 +72,8 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | GET | `/jobs/{id}` | status, exit code, start/end times |
 | GET | `/jobs/{id}/logs` | stdout+stderr (live while running) |
 | POST | `/jobs/{id}/stop` | kill the job |
-| GET | `/me` | my user + limits |
+| GET | `/me` | my user, limits and `balance_hours` |
+| GET | `/me/usage?start=&end=` | my jobs with cost + CPU/mem stats, totals and per-day totals |
 
 Defaults per job: 1 CPU, 256 MB, the user's `max_run_seconds`; requests above
 the user's limits are rejected. New users default to 1 CPU / 256 MB / 600 s / 2 concurrent jobs, no network.
@@ -101,13 +108,28 @@ users. Workspace volumes have no disk quota (only the upload is capped).
 
 ## Job statuses
 
-`queued → preparing → running → succeeded | failed | timeout | stopped | error`.
+`queued → preparing → running → succeeded | failed | timeout | stopped | out_of_credits | error`.
 On restart, the server marks jobs that were still active as `error` and removes leftover job containers/volumes.
 
-## Billing data (for step 2)
+## Credits
 
-The `jobs` table stores `user_id, image, cpus, mem_mb, started_at, finished_at, exit_code, status`
-plus a `billed` flag. Planned rate: 1 credit-hour = 1 CPU core + 2 GB RAM for one hour, larger containers charged proportionally.
+- **Unit:** 1 credit-hour = 1 CPU core + 256 MB RAM for 1 hour of wall-clock run time.
+  A job costs `run_seconds / 3600 * max(cpus, mem_mb / 256)` hours, so it is charged for its
+  *reserved* size (whichever dimension is larger), not its actual use.
+- Balances are integers in micro-hours (`users.balance_uh`) and always equal the sum of the
+  `ledger` table (`topup`, `adjust`, `job` entries, with admin id / job id / note).
+- New users get `DEFAULT_CREDIT_HOURS` (1000) as an initial `topup`.
+- **Before start:** the job is refused (HTTP 402) unless *available* credit — balance minus what the
+  user's running jobs have used so far — covers `MIN_START_SECONDS` (60 s) at the requested size.
+- **While running:** every `MONITOR_INTERVAL` seconds the runner samples `docker stats`
+  (stored on the job as avg/peak CPU % — 100 = one core — and avg/peak memory MB) and checks the
+  available credit; at zero the container is killed with status `out_of_credits`. Because of the
+  check interval a balance can dip slightly below zero.
+- **On finish:** the job is charged once (`billed` flag, claimed atomically → idempotent). On startup
+  the server bills any finished-but-unbilled jobs and jobs that were left running across a restart
+  (charged up to the restart time).
+- Jobs shorter than one monitor interval have no stats samples.
+- CLI: `python -m dockerserver.cli credits <name> <hours> [--note ...]`.
 
 ## Tests
 
@@ -115,7 +137,7 @@ plus a `billed` flag. Planned rate: 1 credit-hour = 1 CPU core + 2 GB RAM for on
 sg docker -c ".venv/bin/python -m pytest -q"
 ```
 
-Docker tests (a hello-world job that checks the container can't see host files, a timeout, a stop)
+Docker tests (a hello-world job that checks the container can't see host files, a timeout, a stop, a job stopped when credits run out)
 are skipped automatically if Docker isn't reachable.
 
 ## Layout
@@ -123,7 +145,8 @@ are skipped automatically if Docker isn't reachable.
 ```
 dockerserver/
   config.py     settings from env
-  models.py     SQLAlchemy models: User, Token, Job
+  models.py     SQLAlchemy models: User, Token, Job, LedgerEntry (+ tiny SQLite auto-migration)
+  billing.py    credit math, ledger, idempotent job billing
   auth.py       token issue / hash / lookup
   workspace.py  upload/git → sanitized tar for /workspace
   runner.py     Docker job runner (limits, isolation, timeout, logs)

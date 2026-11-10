@@ -14,7 +14,10 @@ from sqlalchemy.orm import Session
 from . import __version__
 from .auth import issue_token, lookup_user
 from .config import Settings, load_settings
-from .models import ACTIVE_STATUSES, TERMINAL_STATUSES, Job, Token, User, make_session_factory, utcnow
+from .billing import (UH_PER_HOUR, accrued_uh, add_entry, available_uh, cost_uh, grant_initial,
+                      grant_missing_initial, hours, job_run_seconds, to_uh)
+from .models import (ACTIVE_STATUSES, TERMINAL_STATUSES, Job, LedgerEntry, Token, User,
+                     make_session_factory, utcnow)
 from .runner import JobRunner
 
 bearer = HTTPBearer(auto_error=False)
@@ -50,6 +53,7 @@ class UserOut(BaseModel):
     max_run_seconds: int
     max_concurrent_jobs: int
     allow_network: bool
+    balance_hours: float
     created_at: datetime
 
 
@@ -94,6 +98,51 @@ class JobOut(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     duration_seconds: float | None
+    billed: bool
+    cost_hours: float | None
+    stat_samples: int
+    cpu_avg_pct: float | None
+    cpu_peak_pct: float | None
+    mem_avg_mb: float | None
+    mem_peak_mb: float | None
+
+
+class CreditChange(BaseModel):
+    hours: float = Field(description="credit-hours to add (negative to deduct)")
+    reason: Literal["topup", "adjust"] = "topup"
+    note: str | None = Field(None, max_length=500)
+
+
+class LedgerOut(BaseModel):
+    model_config = {"from_attributes": True}
+    id: int
+    user_id: int
+    delta_hours: float
+    balance_after_hours: float
+    reason: str
+    job_id: int | None
+    admin_id: int | None
+    note: str | None
+    created_at: datetime
+
+
+def ledger_out(e: LedgerEntry) -> dict:
+    return {"id": e.id, "user_id": e.user_id, "delta_hours": hours(e.delta_uh),
+            "balance_after_hours": hours(e.balance_after_uh), "reason": e.reason,
+            "job_id": e.job_id, "admin_id": e.admin_id, "note": e.note, "created_at": e.created_at}
+
+
+def usage_totals(jobs: list[Job]) -> dict:
+    """cpu_hours = cores x hours, mem_gb_hours = GB x hours, cost_hours = credits charged/accrued."""
+    t = {"jobs": 0, "run_seconds": 0.0, "cpu_hours": 0.0, "mem_gb_hours": 0.0, "cost_hours": 0.0}
+    for j in jobs:
+        sec = job_run_seconds(j)
+        t["jobs"] += 1
+        t["run_seconds"] += sec
+        t["cpu_hours"] += j.cpus * sec / 3600
+        t["mem_gb_hours"] += j.mem_mb / 1024 * sec / 3600
+        t["cost_hours"] += accrued_uh(j) / UH_PER_HOUR
+    return {k: round(v, 6) if isinstance(v, float) else v for k, v in t.items()}
 
 
 # ---------- app factory ----------
@@ -102,6 +151,8 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     settings = settings or load_settings()
     Session_ = make_session_factory(settings.db_url)
     runner = runner or JobRunner(settings, Session_)
+    with Session_() as db:
+        grant_missing_initial(db, settings.default_credit_hours)
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -158,15 +209,18 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
 
     # ----- admin -----
     @app.post("/admin/users", response_model=UserCreated, status_code=201)
-    def create_user(body: UserCreate, db: DB, _: Admin):
+    def create_user(body: UserCreate, db: DB, admin: Admin):
         fields = {k: v for k, v in body.model_dump().items() if v is not None}
         u = User(**fields)
         db.add(u)
         try:
-            db.commit()
+            db.flush()
         except IntegrityError:
             db.rollback()
             raise HTTPException(409, "user name already exists")
+        grant_initial(db, u, settings.default_credit_hours, admin_id=admin.id)
+        db.commit()
+        db.refresh(u)
         _, raw = issue_token(db, u)
         return {**UserOut.model_validate(u).model_dump(), "token": raw}
 
@@ -218,6 +272,60 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
             db.commit()
         return tok
 
+    @app.post("/admin/users/{user_id}/credits", response_model=LedgerOut, status_code=201)
+    def change_credits(user_id: int, body: CreditChange, db: DB, admin: Admin):
+        get_user_or_404(db, user_id)
+        if body.hours == 0:
+            raise HTTPException(400, "hours must be non-zero")
+        e = add_entry(db, user_id, to_uh(body.hours), body.reason, admin_id=admin.id, note=body.note)
+        db.commit()
+        return ledger_out(e)
+
+    @app.get("/admin/users/{user_id}/ledger", response_model=list[LedgerOut])
+    def user_ledger(user_id: int, db: DB, _: Admin, limit: int = 200):
+        get_user_or_404(db, user_id)
+        q = select(LedgerEntry).where(LedgerEntry.user_id == user_id).order_by(LedgerEntry.id.desc())
+        return [ledger_out(e) for e in db.scalars(q.limit(min(limit, 5000)))]
+
+    def jobs_in_range(db, start, end, user_id=None):
+        q = select(Job).where(Job.started_at.is_not(None)).order_by(Job.id)
+        if user_id is not None:
+            q = q.where(Job.user_id == user_id)
+        if start:
+            q = q.where(Job.started_at >= start)
+        if end:
+            q = q.where(Job.started_at < end)
+        return db.scalars(q).all()
+
+    @app.get("/admin/usage")
+    def admin_usage(db: DB, _: Admin, start: datetime | None = None, end: datetime | None = None):
+        """Per-user totals for jobs started in [start, end) (UTC)."""
+        by_user: dict[int, list[Job]] = {}
+        for j in jobs_in_range(db, start, end):
+            by_user.setdefault(j.user_id, []).append(j)
+        users = {u.id: u for u in db.scalars(select(User))}
+        rows = [{"user_id": uid, "name": users[uid].name, "balance_hours": users[uid].balance_hours,
+                 **usage_totals(js)} for uid, js in sorted(by_user.items())]
+        return {"start": start, "end": end, "users": rows,
+                "total": usage_totals([j for js in by_user.values() for j in js])}
+
+    @app.get("/me/usage")
+    def my_usage(db: DB, user: CurrentUser, start: datetime | None = None,
+                 end: datetime | None = None):
+        """My jobs (with cost and usage stats) and per-day totals, by job start day (UTC)."""
+        jobs = jobs_in_range(db, start, end, user.id)
+        days: dict[str, list[Job]] = {}
+        for j in jobs:
+            days.setdefault(j.started_at.date().isoformat(), []).append(j)
+        return {
+            "balance_hours": user.balance_hours,
+            "available_hours": hours(available_uh(db, user.id)),
+            "total": usage_totals(jobs),
+            "per_day": [{"day": d, **usage_totals(js)} for d, js in sorted(days.items())],
+            "jobs": [{**JobOut.model_validate(j).model_dump(), "cost_hours": hours(accrued_uh(j))}
+                     for j in reversed(jobs)],
+        }
+
     # ----- jobs -----
     @app.post("/jobs", response_model=JobOut, status_code=201)
     async def submit_job(
@@ -249,6 +357,10 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
             raise HTTPException(403, "network access is not enabled for your account")
         if git_url and not git_url.startswith("https://"):
             raise HTTPException(400, "git_url must be an https:// URL")
+        need = cost_uh(cpus, mem_mb, settings.min_start_seconds)
+        if available_uh(db, user.id) < need:
+            raise HTTPException(402, f"not enough credits: need at least {hours(need):.4f} hours "
+                                     f"for {settings.min_start_seconds}s at this size")
         active = db.scalar(select(func.count()).select_from(Job).where(
             Job.user_id == user.id, Job.status.in_(ACTIVE_STATUSES)))
         if active >= user.max_concurrent_jobs:

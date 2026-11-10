@@ -2,7 +2,7 @@
 user, cpus, mem_mb, started_at, finished_at."""
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 
@@ -25,9 +25,16 @@ class User(Base):
     max_run_seconds: Mapped[int] = mapped_column(Integer, default=600)
     max_concurrent_jobs: Mapped[int] = mapped_column(Integer, default=2)
     allow_network: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Credit balance in micro-hours (1 hour = 1 CPU core + 256 MB for 1 hour).
+    # Always equal to the sum of this user's ledger entries.
+    balance_uh: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     tokens: Mapped[list["Token"]] = relationship(back_populates="user")
+
+    @property
+    def balance_hours(self) -> float:
+        return self.balance_uh / 1_000_000
 
     @property
     def is_admin(self) -> bool:
@@ -67,7 +74,19 @@ class Job(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    billed: Mapped[bool] = mapped_column(Boolean, default=False)  # reserved for step 2
+    # Billing: charged once on finish (billed flag makes it idempotent).
+    billed: Mapped[bool] = mapped_column(Boolean, default=False)
+    cost_uh: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Usage samples from `docker stats` (CPU % is per core: 100 = one full core).
+    stat_samples: Mapped[int] = mapped_column(Integer, default=0)
+    cpu_avg_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cpu_peak_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mem_avg_mb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mem_peak_mb: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    @property
+    def cost_hours(self) -> float | None:
+        return None if self.cost_uh is None else self.cost_uh / 1_000_000
 
     @property
     def duration_seconds(self) -> float | None:
@@ -76,11 +95,49 @@ class Job(Base):
         return None
 
 
-TERMINAL_STATUSES = {"succeeded", "failed", "timeout", "stopped", "error"}
+class LedgerEntry(Base):
+    """Every balance change. reason: topup | adjust | job."""
+    __tablename__ = "ledger"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    delta_uh: Mapped[int] = mapped_column(Integer)
+    balance_after_uh: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(16))
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, unique=True)
+    admin_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+TERMINAL_STATUSES = {"succeeded", "failed", "timeout", "stopped", "error", "out_of_credits"}
 ACTIVE_STATUSES = {"queued", "preparing", "running"}
+
+
+def _auto_migrate(engine):
+    """Tiny SQLite migration: add columns that exist in the models but not in the DB."""
+    insp = inspect(engine)
+    added = []
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in have:
+                    continue
+                ddl = col.type.compile(engine.dialect)
+                default = col.default.arg if col.default is not None and not callable(col.default.arg) else None
+                if default is None:
+                    conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {ddl}'))
+                else:
+                    conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {ddl} '
+                                      f"NOT NULL DEFAULT {int(default) if isinstance(default, bool) else default!r}"))
+                added.append(f"{table.name}.{col.name}")
+    return added
 
 
 def make_session_factory(db_url: str):
     engine = create_engine(db_url, connect_args={"check_same_thread": False})
+    _auto_migrate(engine)
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)
