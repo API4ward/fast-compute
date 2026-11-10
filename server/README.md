@@ -91,6 +91,57 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8800/jobs/1/logs
 > Use `--form-string` for `command`: with `-F`, curl treats `;` as an option
 > separator and silently truncates commands like `echo a; echo b`.
 
+## MCP interface
+
+The same server exposes an [MCP](https://modelcontextprotocol.io) endpoint at **`/mcp`**
+(Streamable HTTP, stateless, JSON responses), so LLM clients can run code here directly.
+It uses the same access tokens and the same service layer as the REST API: identical
+permissions, limits and credit checks. Requests without a valid, active token get HTTP 401.
+
+| Tool | Who | What |
+|---|---|---|
+| `submit_job` | all | `command` + either `files` (`{path: text}`) or `git_url`; optional `image`, `cpus`, `mem_mb`, `timeout_seconds`, `network`, `wait` (0–60 s: block and return status + log tail) |
+| `list_jobs`, `get_job`, `get_job_logs` (`tail`), `stop_job` | all | own jobs (admins: any) |
+| `get_balance`, `get_usage` | all | credits, limits, usage totals / per day |
+| `list_users`, `create_user`, `add_credits`, `usage_report` | admin | hidden from non-admins' tool list and refused if called |
+
+**Claude Code** (replace HOST with `127.0.0.1` locally, or the public name once exposed):
+
+```bash
+claude mcp add --transport http dockerserver http://HOST:8800/mcp \
+  --header "Authorization: Bearer ds_YOUR_TOKEN"
+```
+
+**Claude Desktop** — add to `claude_desktop_config.json` (Settings → Developer → Edit Config).
+Desktop talks to remote HTTP servers through the `mcp-remote` bridge (needs Node.js):
+
+```json
+{
+  "mcpServers": {
+    "dockerserver": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://HOST:8800/mcp",
+               "--header", "Authorization: Bearer ${DOCKERSERVER_TOKEN}"],
+      "env": { "DOCKERSERVER_TOKEN": "ds_YOUR_TOKEN" }
+    }
+  }
+}
+```
+
+(If the server is reachable over HTTPS from the internet, it can instead be added in
+Claude Desktop / claude.ai under Settings → Connectors → Add custom connector — but connectors
+there authenticate with OAuth, not a static header, so the bridge above is the simple route
+for now.) Use plain `http://` only on localhost or a private network; put HTTPS in front before
+exposing the port.
+
+Quick check without a client:
+
+```bash
+curl -s http://127.0.0.1:8800/mcp -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
 ## Isolation
 
 Each job gets a new container and a new named volume, both deleted afterwards:
@@ -150,8 +201,11 @@ dockerserver/
   auth.py       token issue / hash / lookup
   workspace.py  upload/git → sanitized tar for /workspace
   runner.py     Docker job runner (limits, isolation, timeout, logs)
-  api.py        FastAPI app (admin + jobs)
+  schemas.py    pydantic request/response models
+  services.py   business logic shared by REST and MCP (permissions, limits, credits)
+  api.py        FastAPI app (admin + jobs) + mounts /mcp
+  mcp_server.py MCP server (tools, bearer auth, admin-tool hiding)
   main.py       ASGI entry point
   cli.py        create-admin / issue-token / list-users
-tests/          pytest (API tests + real Docker tests)
+tests/          pytest (API, billing, MCP-over-HTTP, real Docker tests)
 ```
