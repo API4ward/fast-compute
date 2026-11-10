@@ -1,0 +1,23 @@
+[Unit]
+Description=DockerServer (compute jobs API + MCP)
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+SupplementaryGroups=docker
+WorkingDirectory=/home/ubuntu/projects/dockerserver
+EnvironmentFile=-/etc/dockerserver.env
+ExecStart=/home/ubuntu/projects/dockerserver/.venv/bin/uvicorn dockerserver.main:app --host 127.0.0.1 --port 8800 --no-access-log
+Restart=on-failure
+RestartSec=3
+# Keep the API process small on this 1 GB host (job containers are separate cgroups).
+MemoryHigh=200M
+MemoryMax=350M
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

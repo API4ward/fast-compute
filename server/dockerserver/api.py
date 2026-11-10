@@ -1,10 +1,12 @@
 """FastAPI application: admin + job endpoints, bearer-token auth."""
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -80,6 +82,29 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
         return user
 
     Admin = Annotated[User, Depends(admin_user)]
+
+    # ----- web pages (static; they only call this REST API) -----
+    static_dir = Path(__file__).parent / "static"
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    page_headers = {
+        "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                                   "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cache-Control": "no-cache",
+    }
+
+    @app.get("/admin-ui", include_in_schema=False)
+    def admin_ui():
+        return FileResponse(static_dir / "admin.html", headers=page_headers)
+
+    @app.get("/ui", include_in_schema=False)
+    def user_ui():
+        return FileResponse(static_dir / "user.html", headers=page_headers)
+
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse("/ui")
 
     # ----- misc -----
     @app.get("/health")

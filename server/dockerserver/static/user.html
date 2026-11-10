@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DockerServer</title>
+<link rel="stylesheet" href="/static/common.css">
+</head>
+<body>
+<div id="login" class="panel hidden">
+  <h2>DockerServer</h2>
+  <form id="login-form">
+    <label class="muted" for="token-input">Access token</label>
+    <input id="token-input" type="password" autocomplete="off" placeholder="ds_…" required>
+    <button class="btn primary" type="submit">Sign in</button>
+    <p id="login-err" class="muted"></p>
+    <p class="muted">The token is kept in this tab's session storage only.</p>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>DockerServer</h1>
+    <span class="who" id="who"></span>
+    <button class="btn" id="refresh">Refresh</button>
+    <button class="btn" id="logout">Sign out</button>
+  </header>
+  <main>
+    <div class="panel">
+      <div class="stats" id="stats"></div>
+      <p class="muted" id="limits"></p>
+      <p class="muted">1 credit-hour = 1 CPU core + 256 MB RAM for 1 hour. A job costs run time × max(cpus, mem_mb / 256).</p>
+    </div>
+    <div class="panel"><h2>My jobs</h2><div id="jobs"></div></div>
+    <div class="panel hidden" id="job-detail"></div>
+    <div class="panel"><h2>Usage per day</h2><div id="per-day"></div></div>
+  </main>
+</div>
+
+<script src="/static/common.js"></script>
+<script>
+async function load() {
+  try {
+    const [me, usage, jobs] = await Promise.all([api("/me"), api("/me/usage"), api("/jobs?limit=50")]);
+    const stat = (v, k) => el("div", { class: "stat" }, el("div", { class: "v" }, v), el("div", { class: "k" }, k));
+    clear($("stats")).append(
+      stat(fmtH(usage.balance_hours, 3), "balance (credit-hours)"),
+      stat(fmtH(usage.available_hours, 3), "available now"),
+      stat(usage.total.jobs, "jobs run"),
+      stat(fmtH(usage.total.cost_hours, 3), "credit-hours spent"));
+    $("limits").textContent = `Limits: ${me.max_cpus} CPU · ${me.max_mem_mb} MB · ${me.max_run_seconds}s per job · `
+      + `${me.max_concurrent_jobs} at once · network ${me.allow_network ? "allowed" : "off"}`;
+    clear($("jobs")).append(jobsTable(jobs, { onSelect: j => showJobDetail($("job-detail"), j, { onChange: load }) }));
+    clear($("per-day")).append(usage.per_day.length ? table(
+      ["Day", { label: "Jobs", num: true }, { label: "Run time", num: true }, { label: "CPU-hours", num: true },
+       { label: "GB-hours", num: true }, { label: "Cost h", num: true }],
+      usage.per_day.slice().reverse().map(d => el("tr", {}, td(d.day), td(d.jobs, "num"), td(fmtDur(d.run_seconds), "num"),
+        td(fmtH(d.cpu_hours), "num"), td(fmtH(d.mem_gb_hours), "num"), td(fmtH(d.cost_hours), "num"))))
+      : el("p", { class: "muted" }, "No usage yet."));
+  } catch (e) { showMsg(document.querySelector("main"), e.message); }
+}
+$("refresh").addEventListener("click", load);
+initLogin({ requireAdmin: false, onReady: load });
+</script>
+</body>
+</html>

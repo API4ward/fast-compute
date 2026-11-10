@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DockerServer Admin</title>
+<link rel="stylesheet" href="/static/common.css">
+</head>
+<body>
+<div id="login" class="panel hidden">
+  <h2>DockerServer admin</h2>
+  <form id="login-form">
+    <label class="muted" for="token-input">Admin access token</label>
+    <input id="token-input" type="password" autocomplete="off" placeholder="ds_…" required>
+    <button class="btn primary" type="submit">Sign in</button>
+    <p id="login-err" class="muted"></p>
+    <p class="muted">The token is kept in this tab's session storage only.</p>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>DockerServer admin</h1>
+    <nav>
+      <button data-tab="users" class="active">Users</button>
+      <button data-tab="jobs">Jobs</button>
+      <button data-tab="usage">Usage</button>
+    </nav>
+    <span class="who" id="who"></span>
+    <button class="btn" id="logout">Sign out</button>
+  </header>
+  <main>
+    <!-- USERS -->
+    <section data-tab="users">
+      <div class="panel">
+        <h2>Create user</h2>
+        <form id="create-form" class="row">
+          <label>Name <input name="name" required pattern="[A-Za-z0-9_.@-]+"></label>
+          <label>Role <select name="role"><option value="user">user</option><option value="admin">admin</option></select></label>
+          <label>Max CPUs <input name="max_cpus" type="number" step="0.1" min="0.1" value="1"></label>
+          <label>Max MB <input name="max_mem_mb" type="number" step="32" min="32" value="256"></label>
+          <label>Max run s <input name="max_run_seconds" type="number" min="1" value="600"></label>
+          <label>Concurrent <input name="max_concurrent_jobs" type="number" min="1" value="2"></label>
+          <label>Network <select name="allow_network"><option value="false">no</option><option value="true">yes</option></select></label>
+          <button class="btn primary" type="submit">Create</button>
+        </form>
+        <div id="new-token"></div>
+      </div>
+      <div class="panel"><h2>Users</h2><div id="users"></div></div>
+      <div class="panel hidden" id="user-detail"></div>
+    </section>
+
+    <!-- JOBS -->
+    <section data-tab="jobs" class="hidden">
+      <div class="panel">
+        <div class="row" style="margin-bottom:12px">
+          <h2 style="margin:0">Recent jobs (all users)</h2>
+          <label>Status <select id="job-status">
+            <option value="">any</option><option>running</option><option>queued</option><option>succeeded</option>
+            <option>failed</option><option>timeout</option><option>stopped</option><option>out_of_credits</option><option>error</option>
+          </select></label>
+          <button class="btn" id="jobs-refresh">Refresh</button>
+        </div>
+        <div id="jobs"></div>
+      </div>
+      <div class="panel hidden" id="job-detail"></div>
+    </section>
+
+    <!-- USAGE -->
+    <section data-tab="usage" class="hidden">
+      <div class="panel">
+        <h2>Usage report</h2>
+        <form id="usage-form" class="row">
+          <label>From (UTC) <input type="date" name="start"></label>
+          <label>To (exclusive) <input type="date" name="end"></label>
+          <button class="btn primary" type="submit">Run</button>
+        </form>
+        <p class="muted">Jobs counted by start time. Cost in credit-hours (1 h = 1 CPU + 256 MB for 1 hour).</p>
+        <div id="usage"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="/static/common.js"></script>
+<script>
+let userNames = {};
+
+async function loadUsers() {
+  const box = $("users");
+  try {
+    const users = await api("/admin/users");
+    userNames = Object.fromEntries(users.map(u => [u.id, u.name]));
+    clear(box).append(table(
+      ["ID", "Name", "Role", "Active", { label: "Balance h", num: true }, { label: "Max CPU", num: true },
+       { label: "Max MB", num: true }, { label: "Max run s", num: true }, { label: "Conc.", num: true }, "Net", ""],
+      users.map(u => el("tr", {},
+        td(u.id), td(u.name), td(u.role), td(u.active ? "yes" : el("span", { class: "s-error" }, "disabled")),
+        td(fmtH(u.balance_hours, 3), "num"), td(u.max_cpus, "num"), td(u.max_mem_mb, "num"),
+        td(u.max_run_seconds, "num"), td(u.max_concurrent_jobs, "num"), td(u.allow_network ? "yes" : "no"),
+        td(el("button", { class: "btn", onclick: () => openUser(u.id) }, "Open"))))));
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+}
+
+async function openUser(id) {
+  const box = $("user-detail");
+  clear(box).classList.remove("hidden");
+  let u;
+  try { u = await api(`/admin/users/${id}`); } catch (e) { box.append(el("p", {}, e.message)); return; }
+  const num = (name, step, val) => el("input", { name, type: "number", step, value: val });
+  const limitsForm = el("form", { class: "row" },
+    el("label", {}, "Max CPUs", num("max_cpus", "0.1", u.max_cpus)),
+    el("label", {}, "Max MB", num("max_mem_mb", "32", u.max_mem_mb)),
+    el("label", {}, "Max run s", num("max_run_seconds", "1", u.max_run_seconds)),
+    el("label", {}, "Concurrent", num("max_concurrent_jobs", "1", u.max_concurrent_jobs)),
+    el("label", {}, "Network", el("select", { name: "allow_network" },
+      el("option", { value: "false", selected: !u.allow_network }, "no"),
+      el("option", { value: "true", selected: u.allow_network }, "yes"))),
+    el("label", {}, "Role", el("select", { name: "role" },
+      el("option", { value: "user", selected: u.role === "user" }, "user"),
+      el("option", { value: "admin", selected: u.role === "admin" }, "admin"))),
+    el("button", { class: "btn primary", type: "submit" }, "Save limits"));
+  limitsForm.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    const f = new FormData(limitsForm);
+    try {
+      await api(`/admin/users/${id}`, { method: "PATCH", body: {
+        max_cpus: +f.get("max_cpus"), max_mem_mb: +f.get("max_mem_mb"), max_run_seconds: +f.get("max_run_seconds"),
+        max_concurrent_jobs: +f.get("max_concurrent_jobs"), allow_network: f.get("allow_network") === "true",
+        role: f.get("role") } });
+      showMsg(box, "Saved.", true); loadUsers();
+    } catch (e) { showMsg(box, e.message); }
+  });
+
+  const creditForm = el("form", { class: "row" },
+    el("label", {}, "Hours (negative deducts)", el("input", { name: "hours", type: "number", step: "any", required: true })),
+    el("label", {}, "Reason", el("select", { name: "reason" }, el("option", {}, "topup"), el("option", {}, "adjust"))),
+    el("label", {}, "Note", el("input", { name: "note", maxlength: 500, style: "width:260px" })),
+    el("button", { class: "btn primary", type: "submit" }, "Apply"));
+  creditForm.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    const f = new FormData(creditForm);
+    try {
+      const e = await api(`/admin/users/${id}/credits`, { method: "POST",
+        body: { hours: +f.get("hours"), reason: f.get("reason"), note: f.get("note") || null } });
+      showMsg(box, `New balance: ${fmtH(e.balance_after_hours)} h`, true);
+      openUser(id); loadUsers();
+    } catch (e) { showMsg(box, e.message); }
+  });
+
+  const toggle = el("button", { class: "btn " + (u.active ? "danger" : ""), onclick: async () => {
+    try { await api(`/admin/users/${id}/${u.active ? "disable" : "enable"}`, { method: "POST" }); openUser(id); loadUsers(); }
+    catch (e) { showMsg(box, e.message); }
+  } }, u.active ? "Disable user" : "Enable user");
+
+  const tokenOut = el("div");
+  const newTok = el("button", { class: "btn", onclick: async () => {
+    try {
+      const t = await api(`/admin/users/${id}/tokens`, { method: "POST", body: { name: "admin-ui" } });
+      clear(tokenOut).append(el("p", {}, "New token (shown once — copy it now):"), el("div", { class: "token" }, t.token));
+      loadTokens();
+    } catch (e) { showMsg(box, e.message); }
+  } }, "Issue new token");
+
+  const tokensBox = el("div"), ledgerBox = el("div"), jobsBox = el("div");
+  async function loadTokens() {
+    const toks = await api(`/admin/users/${id}/tokens`);
+    clear(tokensBox).append(table(["ID", "Name", "Prefix", "Created", "Last used", "Status", ""],
+      toks.map(t => el("tr", {}, td(t.id), td(t.name), td(t.prefix + "…"), td(fmtTime(t.created_at)),
+        td(fmtTime(t.last_used_at)), td(t.revoked_at ? "revoked" : "active"),
+        td(t.revoked_at ? "" : el("button", { class: "btn danger", onclick: async () => {
+          if (!confirm(`Revoke token ${t.prefix}…?`)) return;
+          try { await api(`/admin/tokens/${t.id}`, { method: "DELETE" }); loadTokens(); }
+          catch (e) { showMsg(box, e.message); }
+        } }, "Revoke"))))));
+  }
+
+  box.append(
+    el("div", { class: "row" }, el("h2", { style: "margin:0" }, `${u.name} `, el("span", { class: "muted" }, `#${u.id} · ${u.role}`)),
+      el("button", { class: "btn", onclick: () => box.classList.add("hidden") }, "Close")),
+    el("div", { class: "stats", style: "margin:12px 0" },
+      el("div", { class: "stat" }, el("div", { class: "v" }, fmtH(u.balance_hours, 3)), el("div", { class: "k" }, "balance (credit-hours)")),
+      el("div", { class: "stat" }, el("div", { class: "v" }, u.active ? "active" : "disabled"), el("div", { class: "k" }, "status"))),
+    el("h3", {}, "Limits"), limitsForm,
+    el("h3", {}, "Credits"), creditForm,
+    el("h3", {}, "Access"), el("div", { class: "row" }, toggle, newTok), tokenOut, tokensBox,
+    el("h3", {}, "Ledger"), ledgerBox,
+    el("h3", {}, "Recent jobs"), jobsBox);
+
+  loadTokens().catch(e => showMsg(box, e.message));
+  api(`/admin/users/${id}/ledger?limit=100`).then(rows => clear(ledgerBox).append(rows.length ? table(
+    ["When", "Reason", { label: "Δ hours", num: true }, { label: "Balance after", num: true }, "Job", "Admin", "Note"],
+    rows.map(r => el("tr", {}, td(fmtTime(r.created_at)), td(r.reason), td(fmtH(r.delta_hours, 6), "num"),
+      td(fmtH(r.balance_after_hours, 4), "num"), td(r.job_id ?? ""), td(r.admin_id ? (userNames[r.admin_id] || r.admin_id) : ""),
+      td(r.note || "", "wrap")))) : el("p", { class: "muted" }, "No entries."))).catch(e => showMsg(box, e.message));
+  api(`/jobs?all=true&limit=500`).then(all => clear(jobsBox).append(
+    jobsTable(all.filter(j => j.user_id === id).slice(0, 20), { onSelect: j => { selectTab("jobs"); showJobDetail($("job-detail"), j, { onChange: loadJobs }); } })))
+    .catch(e => showMsg(box, e.message));
+  box.scrollIntoView({ behavior: "smooth" });
+}
+
+async function loadJobs() {
+  const box = $("jobs");
+  const st = $("job-status").value;
+  try {
+    const jobs = await api(`/jobs?all=true&limit=100${st ? "&status=" + encodeURIComponent(st) : ""}`);
+    clear(box).append(jobsTable(jobs, { showUser: true, userNames,
+      onSelect: j => showJobDetail($("job-detail"), j, { onChange: loadJobs }) }));
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+}
+
+async function loadUsage(ev) {
+  if (ev) ev.preventDefault();
+  const f = new FormData($("usage-form"));
+  const q = new URLSearchParams();
+  if (f.get("start")) q.set("start", f.get("start") + "T00:00:00");
+  if (f.get("end")) q.set("end", f.get("end") + "T00:00:00");
+  const box = $("usage");
+  try {
+    const r = await api("/admin/usage?" + q);
+    const row = (name, t, bal) => el("tr", {}, td(name), td(t.jobs, "num"), td(fmtDur(t.run_seconds), "num"),
+      td(fmtH(t.cpu_hours), "num"), td(fmtH(t.mem_gb_hours), "num"), td(fmtH(t.cost_hours), "num"),
+      td(bal == null ? "" : fmtH(bal, 3), "num"));
+    clear(box).append(table(["User", { label: "Jobs", num: true }, { label: "Run time", num: true },
+      { label: "CPU-hours", num: true }, { label: "GB-hours", num: true }, { label: "Cost h", num: true }, { label: "Balance h", num: true }],
+      r.users.map(u => row(u.name, u, u.balance_hours)).concat([row(el("b", {}, "Total"), r.total, null)])));
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+}
+
+function selectTab(name) { document.querySelector(`nav button[data-tab="${name}"]`).click(); }
+
+$("create-form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const out = clear($("new-token"));
+  try {
+    const u = await api("/admin/users", { method: "POST", body: {
+      name: f.get("name"), role: f.get("role"), max_cpus: +f.get("max_cpus"), max_mem_mb: +f.get("max_mem_mb"),
+      max_run_seconds: +f.get("max_run_seconds"), max_concurrent_jobs: +f.get("max_concurrent_jobs"),
+      allow_network: f.get("allow_network") === "true" } });
+    out.append(el("p", {}, `Created ${u.name}. Token (shown once — copy it now):`), el("div", { class: "token" }, u.token));
+    ev.target.reset(); loadUsers();
+  } catch (e) { showMsg(out, e.message); }
+});
+$("jobs-refresh").addEventListener("click", loadJobs);
+$("job-status").addEventListener("change", loadJobs);
+$("usage-form").addEventListener("submit", loadUsage);
+
+setupTabs(tab => { if (tab === "jobs") loadJobs(); if (tab === "usage") loadUsage(); if (tab === "users") loadUsers(); });
+initLogin({ requireAdmin: true, onReady: () => loadUsers() });
+</script>
+</body>
+</html>

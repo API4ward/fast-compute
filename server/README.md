@@ -91,6 +91,32 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8800/jobs/1/logs
 > Use `--form-string` for `command`: with `-F`, curl treats `;` as an option
 > separator and silently truncates commands like `echo a; echo b`.
 
+## Web pages
+
+Served by the same app; plain HTML + vanilla JS (no build step), calling only the REST API.
+Sign in by pasting a token (kept in the tab's `sessionStorage`, gone when the tab closes).
+
+- **`/admin-ui`** (admin token): users (balance, limits, active; create → token shown once;
+  disable/enable; edit limits/role; issue/revoke tokens), credit top-up/adjust with note,
+  per-user ledger, recent jobs of all users with status/cost/CPU/memory and logs (stop button),
+  usage report by date range (per-user CPU-hours, GB-hours, cost).
+- **`/ui`** (any token): my balance, limits, jobs (with logs), usage per day.
+
+## Run as a systemd service
+
+Unit and env file are in `deploy/`. Install (needs sudo):
+
+```bash
+sudo sh deploy/install-service.sh
+```
+
+It copies `deploy/dockerserver.service` to `/etc/systemd/system/`, creates
+`/etc/dockerserver.env` from `deploy/dockerserver.env.example` (if missing), stops a manually
+started instance, then `systemctl enable --now dockerserver` and restarts it once as a check.
+The unit runs as `ubuntu` with the `docker` group, on 127.0.0.1:8800,
+`Restart=on-failure`, `MemoryHigh=200M` / `MemoryMax=350M`.
+Logs: `journalctl -u dockerserver -f`.
+
 ## MCP interface
 
 The same server exposes an [MCP](https://modelcontextprotocol.io) endpoint at **`/mcp`**
@@ -205,7 +231,9 @@ dockerserver/
   services.py   business logic shared by REST and MCP (permissions, limits, credits)
   api.py        FastAPI app (admin + jobs) + mounts /mcp
   mcp_server.py MCP server (tools, bearer auth, admin-tool hiding)
+  static/       admin.html (/admin-ui), user.html (/ui), common.js/css
+deploy/         systemd unit, env example, install script
   main.py       ASGI entry point
   cli.py        create-admin / issue-token / list-users
-tests/          pytest (API, billing, MCP-over-HTTP, real Docker tests)
+tests/          pytest (API, billing, MCP-over-HTTP, web pages, real Docker tests)
 ```
