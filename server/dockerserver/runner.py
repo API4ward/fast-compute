@@ -46,23 +46,27 @@ class JobRunner:
         self._lock = threading.Lock()
         self._threads: dict[int, threading.Thread] = {}
         self._handles: dict[int, Handle] = {}
+        self._envs: dict[int, dict[str, str]] = {}   # per-job env, in memory only until it starts
         # job_id -> (final status, error note) for jobs being stopped on request
         self._stop_requested: dict[int, tuple[str, str | None]] = {}
 
     # ---------- public API ----------
-    def submit(self, job_id: int, filename: str | None, content: bytes | None):
+    def submit(self, job_id: int, filename: str | None, content: bytes | None,
+               env: dict[str, str] | None = None):
+        with self._lock:
+            self._envs[job_id] = dict(env or {})
         t = threading.Thread(target=self._run, args=(job_id, filename, content),
                              name=f"job-{job_id}", daemon=True)
         with self._lock:
             self._threads[job_id] = t
         t.start()
 
-    def never_fits(self, cpus: float, mem_mb: int) -> str | None:
+    def never_fits(self, cpus: float, mem_mb: int, needs_env: bool = False) -> str | None:
         if self.pool.local is not None:
             return None
         if not self.pool.remote_enabled:
             return "no compute node is configured and local execution is disabled"
-        return self.pool.never_fits(cpus, mem_mb)
+        return self.pool.never_fits(cpus, mem_mb, needs_env)
 
     def stop(self, job_id: int, status: str = "stopped", note: str | None = None):
         with self._lock:
@@ -138,8 +142,10 @@ class JobRunner:
         try:
             with self.Session() as db:
                 job = db.get(Job, job_id)
+                with self._lock:
+                    env = self._envs.pop(job_id, {})
                 spec = JobSpec(job_id, job.image, job.command, job.cpus, job.mem_mb,
-                               job.timeout_seconds, job.network)
+                               job.timeout_seconds, job.network, env)
                 git_url = job.git_url
             self._update(job_id, status="preparing")
             uid, gid = (int(x) for x in s.container_user.split(":"))
@@ -192,12 +198,12 @@ class JobRunner:
                 self._update(job_id, status="out_of_credits", finished_at=utcnow(),
                              error="not enough credits to start this job")
                 return None
-            reason = self.never_fits(spec.cpus, spec.mem_mb)
+            reason = self.never_fits(spec.cpus, spec.mem_mb, bool(spec.env))
             if reason:
                 self._update(job_id, status="error", error=reason, finished_at=utcnow())
                 return None
             errors = []
-            for b in self.pool.candidates(spec.cpus, spec.mem_mb):
+            for b in self.pool.candidates(spec.cpus, spec.mem_mb, bool(spec.env)):
                 self.pool.reserve(b, spec.cpus, spec.mem_mb)
                 try:
                     return b.start(spec, payload)

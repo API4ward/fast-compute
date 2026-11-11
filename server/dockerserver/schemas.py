@@ -75,6 +75,7 @@ class JobOut(BaseModel):
     mem_mb: int
     timeout_seconds: int
     network: bool
+    env_names: str | None = None
     node: str | None = None
     status: str
     exit_code: int | None
@@ -116,6 +117,10 @@ class AdminJobOut(BaseModel):
     cpu_peak_pct: float | None
     mem_avg_mb: float | None
     mem_peak_mb: float | None
+
+
+class EnvValue(BaseModel):
+    value: str = Field(max_length=4096)
 
 
 class CreditChange(BaseModel):

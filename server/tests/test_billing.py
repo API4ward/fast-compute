@@ -24,7 +24,7 @@ def test_cost_math():
 
 
 class StubRunner:
-    def submit(self, *a):
+    def submit(self, *a, **k):
         pass
 
     def recover(self):

@@ -70,7 +70,8 @@ def test_bad_token_rejected(server):
         mcp_call(server["base"], "ds_nope", lambda s: s.list_tools())
 
 
-USER_TOOLS = {"submit_job", "list_jobs", "get_job", "get_job_logs", "stop_job", "get_balance", "get_usage"}
+USER_TOOLS = {"submit_job", "list_jobs", "get_job", "get_job_logs", "stop_job", "get_balance", "get_usage",
+              "list_env", "set_env", "delete_env"}
 ADMIN_TOOLS = {"list_users", "create_user", "set_user_status", "set_user_limits", "suspend_user",
                "list_user_jobs", "add_credits", "get_ledger", "usage_report", "issue_token", "revoke_token"}
 

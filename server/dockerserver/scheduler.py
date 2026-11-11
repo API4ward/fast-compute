@@ -37,13 +37,18 @@ class NodePool:
                 out.append((b, info))
         return out
 
-    def never_fits(self, cpus: float, mem_mb: int) -> str | None:
-        """Reason string if no node (that we can see) could ever run this size, else None."""
+    def never_fits(self, cpus: float, mem_mb: int, needs_env: bool = False) -> str | None:
+        """Reason string if no node (that we can see) could ever run this job, else None."""
         if not self.nodes:
             return None
         infos = self._infos()
         if not infos:
             return None  # nodes unreachable right now: can't tell, let it queue
+        if needs_env:
+            infos = [(b, i) for b, i in infos if "env" in (i.get("features") or [])]
+            if not infos and self.local is None:
+                return ("environment variables are not supported by the compute nodes yet "
+                        "(their agent needs updating); remove env/user variables or ask the admin")
         if any(i["capacity"]["cpus"] + 1e-9 >= cpus and i["capacity"]["mem_mb"] >= mem_mb
                for _, i in infos):
             return None
@@ -51,12 +56,14 @@ class NodePool:
         return (f"job size {cpus} CPU / {mem_mb} MB is larger than any compute node "
                 f"(largest: {biggest['capacity']['cpus']} CPU / {biggest['capacity']['mem_mb']} MB)")
 
-    def candidates(self, cpus: float, mem_mb: int) -> list[Backend]:
-        """Backends to try, best first."""
+    def candidates(self, cpus: float, mem_mb: int, needs_env: bool = False) -> list[Backend]:
+        """Backends to try, best first (only nodes that support env when the job has any)."""
         ranked = []
         with self._lock:
             pending = {k: list(v) for k, v in self._pending.items()}
         for b, info in self._infos():
+            if needs_env and "env" not in (info.get("features") or []):
+                continue
             free = info["free"]
             pc, pm = pending.get(b.name, (0, 0))
             fc, fm = free["cpus"] - pc, free["mem_mb"] - pm

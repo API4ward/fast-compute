@@ -32,6 +32,17 @@
       <p class="muted">1 credit-hour = 1 CPU core + 256 MB RAM for 1 hour. A job costs run time × max(cpus, mem_mb / 256).</p>
     </div>
     <div class="panel"><h2>My jobs</h2><div id="jobs"></div></div>
+    <div class="panel">
+      <h2>Environment variables</h2>
+      <p class="muted">Injected into every job you run (a job's own <code>env</code> overrides them).
+        Stored encrypted; only you can see the values — administrators cannot.</p>
+      <div id="env"></div>
+      <form id="env-form" class="row" style="margin-top:12px">
+        <label>Name <input name="name" required pattern="[A-Za-z_][A-Za-z0-9_]{0,63}" placeholder="API_KEY"></label>
+        <label>Value <input name="value" type="password" autocomplete="off" maxlength="4096" style="width:320px"></label>
+        <button class="btn primary" type="submit">Save</button>
+      </form>
+    </div>
     <div class="panel hidden" id="job-detail"></div>
     <div class="panel"><h2>Usage per day</h2><div id="per-day"></div></div>
   </main>
@@ -59,8 +70,31 @@ async function load() {
       : el("p", { class: "muted" }, "No usage yet."));
   } catch (e) { showMsg(document.querySelector("main"), e.message); }
 }
+async function loadEnv(reveal = false) {
+  const box = $("env");
+  try {
+    const vars = await api(`/me/env${reveal ? "?reveal=true" : ""}`);
+    clear(box).append(vars.length ? table(["Name", "Value", "Updated", ""],
+      vars.map(v => el("tr", {}, td(el("code", {}, v.name)), td(v.value, "wrap"), td(fmtTime(v.updated_at)),
+        td(el("button", { class: "btn danger", onclick: async () => {
+          if (!confirm(`Delete ${v.name}?`)) return;
+          try { await api(`/me/env/${encodeURIComponent(v.name)}`, { method: "DELETE" }); loadEnv(); }
+          catch (e) { showMsg(box, e.message); }
+        } }, "Delete"))))) : el("p", { class: "muted" }, "No variables yet."),
+      vars.length ? el("button", { class: "btn", style: "margin-top:8px",
+        onclick: () => loadEnv(!reveal) }, reveal ? "Hide values" : "Show values") : null);
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+}
+$("env-form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  try {
+    await api(`/me/env/${encodeURIComponent(f.get("name"))}`, { method: "PUT", body: { value: f.get("value") } });
+    ev.target.reset(); loadEnv();
+  } catch (e) { showMsg($("env"), e.message); }
+});
 $("refresh").addEventListener("click", load);
-initLogin({ requireAdmin: false, onReady: load });
+initLogin({ requireAdmin: false, onReady: () => { load(); loadEnv(); } });
 </script>
 </body>
 </html>

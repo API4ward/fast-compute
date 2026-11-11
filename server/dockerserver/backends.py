@@ -47,6 +47,7 @@ class JobSpec:
     mem_mb: int
     timeout_seconds: int
     network: bool
+    env: dict[str, str] = field(default_factory=dict, repr=False)   # values never logged
 
 
 @dataclass
@@ -127,7 +128,7 @@ class LocalDockerBackend(Backend):
                 spec.image, ["sh", "-c", spec.command],
                 name=f"dockerserver-job-{spec.job_id}", labels=labels,
                 user=s.container_user, working_dir="/workspace",
-                environment={"HOME": "/workspace", "PYTHONUNBUFFERED": "1"},
+                environment={**spec.env, "HOME": "/workspace", "PYTHONUNBUFFERED": "1"},
                 mounts=[ws],
                 tmpfs={"/tmp": f"rw,noexec,nosuid,nodev,size={s.tmp_size}"},
                 read_only=True, privileged=False, cap_drop=["ALL"],
@@ -291,12 +292,18 @@ class RemoteNodeBackend(Backend):
     def invalidate(self):
         self._info_at = 0.0
 
+    def supports(self, feature: str, max_age: float = 0) -> bool:
+        info = self.info(max_age=max_age)
+        return bool(info) and feature in (info.get("features") or [])
+
     # ---- jobs ----
     def start(self, spec: JobSpec, payload: bytes) -> Handle:
         node_id = f"ds{spec.job_id}-{int(time.time())}"
         body = {"id": node_id, "image": spec.image, "command": spec.command, "cpus": spec.cpus,
                 "mem_mb": spec.mem_mb, "timeout_seconds": spec.timeout_seconds,
                 "network": spec.network}
+        if spec.env:
+            body["env"] = spec.env          # only nodes advertising features: ["env"] get these jobs
         files = {"spec": (None, json.dumps(body), "application/json")}
         if payload:
             files["workspace"] = ("workspace.tar", payload, "application/x-tar")

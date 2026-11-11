@@ -12,8 +12,9 @@ class StubRunner:
     def __init__(self):
         self.submitted = []
 
-    def submit(self, job_id, filename, content):
+    def submit(self, job_id, filename, content, env=None):
         self.submitted.append((job_id, filename, content))
+        self.envs = getattr(self, "envs", []) + [env]
 
     def recover(self):
         pass
