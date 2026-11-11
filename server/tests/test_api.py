@@ -95,9 +95,16 @@ def test_job_limits_and_visibility(tmp_path):
         assert c.get(f"/jobs/{job['id']}/logs", headers=hb).status_code == 404
         assert c.post(f"/jobs/{job['id']}/stop", headers=hb).status_code == 404
         assert c.get("/jobs", headers=hb).json() == []
-        assert c.get(f"/jobs/{job['id']}", headers=auth(atok)).status_code == 200
-        assert len(c.get("/jobs?all=true", headers=auth(atok)).json()) == 1
-        assert c.get("/jobs?all=true", headers=hb).json() == []  # all ignored for non-admin
+        # admins can't open, read or stop another user's job...
+        assert c.get(f"/jobs/{job['id']}", headers=auth(atok)).status_code == 404
+        assert c.get(f"/jobs/{job['id']}/logs", headers=auth(atok)).status_code == 404
+        assert c.post(f"/jobs/{job['id']}/stop", headers=auth(atok)).status_code == 404
+        assert c.get("/jobs", headers=auth(atok)).json() == []
+        # ...they only get read-only metadata (no command/code)
+        meta = c.get("/admin/jobs", headers=auth(atok)).json()
+        assert len(meta) == 1 and "command" not in meta[0] and "git_url" not in meta[0]
+        assert c.get(f"/admin/jobs?user_id={a['id']}", headers=auth(atok)).json()[0]["id"] == job["id"]
+        assert c.get("/admin/jobs", headers=hb).status_code == 403
         # concurrency limit (default 2 active jobs)
         c.post("/jobs", data={"command": "x"}, headers=h)
         assert c.post("/jobs", data={"command": "x"}, headers=h).status_code == 429

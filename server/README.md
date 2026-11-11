@@ -58,14 +58,16 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | POST | `/admin/users` | create user `{name, role?, max_cpus?, max_mem_mb?, max_run_seconds?, max_concurrent_jobs?, allow_network?}`; returns a first token |
 | GET | `/admin/users` | list users |
 | PATCH | `/admin/users/{id}` | change role / limits / `active` |
-| POST | `/admin/users/{id}/disable` · `/enable` | disable/enable (disabled users' tokens stop working) |
+| POST | `/admin/users/{id}/disable` · `/enable` | disable/enable (disabled users' tokens stop working; running jobs continue) |
+| POST | `/admin/users/{id}/suspend` | disable **and** kill all the user's running jobs (`killed_by_admin`) |
+| GET | `/admin/jobs?user_id=&status=` | read-only job metadata across users (no command, code or logs) |
 | GET/POST | `/admin/users/{id}/tokens` | list / issue tokens |
 | DELETE | `/admin/tokens/{id}` | revoke a token |
 | POST | `/admin/users/{id}/credits` | `{hours, reason: topup\|adjust, note}` (negative hours deduct) |
 | GET | `/admin/users/{id}/ledger` | the user's balance history |
 | GET | `/admin/usage?start=&end=` | per-user totals (jobs, run seconds, CPU-hours, GB-hours, cost) for jobs started in the range |
 
-**Jobs** (users see only their own; admins can pass `?all=true` and open any job)
+**Jobs** (everyone, admins included, sees and controls only their own jobs here)
 
 | Method | Path | |
 |---|---|---|
@@ -100,7 +102,8 @@ Sign in by pasting a token (kept in the tab's `sessionStorage`, gone when the ta
 
 - **`/admin-ui`** (admin token): users (balance, limits, active; create → token shown once;
   disable/enable; edit limits/role; issue/revoke tokens), credit top-up/adjust with note,
-  per-user ledger, recent jobs of all users with status/cost/CPU/memory and logs (stop button),
+  per-user ledger, suspend (disable + kill all the user's jobs), read-only recent jobs of all users
+  (status/size/cost/CPU/memory — no commands or logs),
   usage report by date range (per-user CPU-hours, GB-hours, cost).
 - **`/ui`** (any token): my balance, limits, jobs (with logs), usage per day.
 
@@ -143,11 +146,16 @@ Public endpoints:
 
 - Web: https://compute.llmfreedomforge.com/ui and https://compute.llmfreedomforge.com/admin-ui
 - REST: `https://compute.llmfreedomforge.com/jobs` etc. (`/docs` for the OpenAPI UI)
-- MCP: `https://compute.llmfreedomforge.com/mcp`
+- MCP (users): `https://compute.llmfreedomforge.com/mcp`
+- MCP (admins): `https://compute.llmfreedomforge.com/mcp-admin`
 
 ```bash
+# everyone (run and manage your own jobs)
 claude mcp add --transport http dockerserver https://compute.llmfreedomforge.com/mcp \
   --header "Authorization: Bearer ds_YOUR_TOKEN"
+# admins only (users, limits, credits, usage, suspend)
+claude mcp add --transport http dockerserver-admin https://compute.llmfreedomforge.com/mcp-admin \
+  --header "Authorization: Bearer ds_ADMIN_TOKEN"
 ```
 
 Only give tokens to people you trust: a token lets its holder run code (within their limits)
@@ -155,23 +163,42 @@ on this server.
 
 ## MCP interface
 
-The same server exposes an [MCP](https://modelcontextprotocol.io) endpoint at **`/mcp`**
-(Streamable HTTP, stateless, JSON responses), so LLM clients can run code here directly.
-It uses the same access tokens and the same service layer as the REST API: identical
-permissions, limits and credit checks. Requests without a valid, active token get HTTP 401.
+The server exposes two separate [MCP](https://modelcontextprotocol.io) services (Streamable
+HTTP, stateless, JSON responses), using the same access tokens and the same service layer as
+the REST API (identical permissions, limits and credit checks). Requests without a valid,
+active token get HTTP 401; the host allowlist and auth-failure rate limit apply to both.
 
-| Tool | Who | What |
-|---|---|---|
-| `submit_job` | all | `command` + either `files` (`{path: text}`) or `git_url`; optional `image`, `cpus`, `mem_mb`, `timeout_seconds`, `network`, `wait` (0–60 s: block and return status + log tail) |
-| `list_jobs`, `get_job`, `get_job_logs` (`tail`), `stop_job` | all | own jobs (admins: any) |
-| `get_balance`, `get_usage` | all | credits, limits, usage totals / per day |
-| `list_users`, `create_user`, `add_credits`, `usage_report` | admin | hidden from non-admins' tool list and refused if called |
+**`/mcp` — user service** (any token). Every caller, admins included, only ever sees and
+controls their **own** jobs here.
 
-**Claude Code** (replace HOST with `127.0.0.1` locally, or the public name once exposed):
+| Tool | What |
+|---|---|
+| `submit_job` | `command` + either `files` (`{path: text}`) or `git_url`; optional `image`, `cpus`, `mem_mb`, `timeout_seconds`, `network`, `wait` (0–60 s: block and return status + log tail) |
+| `list_jobs`, `get_job`, `get_job_logs` (`tail`), `stop_job` | my own jobs |
+| `get_balance`, `get_usage` | my credits, limits, usage totals / per day |
+
+**`/mcp-admin` — admin service** (admin tokens only; other tokens get HTTP 403).
+
+| Tool | What |
+|---|---|
+| `list_users`, `create_user` (returns token once) | users |
+| `set_user_status` | enable/disable an account (disabled: tokens rejected, no new jobs; running jobs continue) |
+| `set_user_limits` | max CPUs / MB / run seconds / concurrent jobs, network, role |
+| `suspend_user` | disable the account **and kill all of the user's running jobs** (status `killed_by_admin`, billed for the time they ran) |
+| `list_user_jobs` | read-only job metadata (status, size, times, cost, CPU/mem) — no commands, code or logs |
+| `add_credits`, `get_ledger`, `usage_report` | credits and usage |
+| `issue_token`, `revoke_token` | tokens |
+
+Admins cannot open, stop or read the logs of an individual user's job — not via MCP, REST or
+the admin page. The only way to affect a user's running jobs is `suspend_user`.
+
+**Claude Code** (replace HOST with `127.0.0.1` locally; publicly see the tunnel section above):
 
 ```bash
 claude mcp add --transport http dockerserver http://HOST:8800/mcp \
   --header "Authorization: Bearer ds_YOUR_TOKEN"
+claude mcp add --transport http dockerserver-admin http://HOST:8800/mcp-admin \
+  --header "Authorization: Bearer ds_ADMIN_TOKEN"
 ```
 
 **Claude Desktop** — add to `claude_desktop_config.json` (Settings → Developer → Edit Config).
@@ -221,7 +248,7 @@ users. Workspace volumes have no disk quota (only the upload is capped).
 
 ## Job statuses
 
-`queued → preparing → running → succeeded | failed | timeout | stopped | out_of_credits | error`.
+`queued → preparing → running → succeeded | failed | timeout | stopped | out_of_credits | killed_by_admin | error`.
 On restart, the server marks jobs that were still active as `error` and removes leftover job containers/volumes.
 
 ## Credits
@@ -266,7 +293,7 @@ dockerserver/
   schemas.py    pydantic request/response models
   services.py   business logic shared by REST and MCP (permissions, limits, credits)
   api.py        FastAPI app (admin + jobs) + mounts /mcp
-  mcp_server.py MCP server (tools, bearer auth, admin-tool hiding)
+  mcp_server.py the two MCP services (/mcp user, /mcp-admin admin), bearer auth
   static/       admin.html (/admin-ui), user.html (/ui), common.js/css
 deploy/         systemd unit, env example, install script
   main.py       ASGI entry point

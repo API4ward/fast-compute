@@ -45,7 +45,7 @@ button.btn:disabled { opacity: .5; cursor: default; }
 .row label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
 .muted { color: var(--muted); }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--border); }
-.s-succeeded { color: var(--ok); } .s-failed, .s-error, .s-out_of_credits { color: var(--bad); }
+.s-succeeded { color: var(--ok); } .s-failed, .s-error, .s-out_of_credits, .s-killed_by_admin { color: var(--bad); }
 .s-timeout, .s-stopped { color: var(--warn); } .s-running, .s-preparing, .s-queued { color: var(--accent); }
 pre.logs { background: var(--code-bg); color: var(--code-text); padding: 12px; border-radius: 8px; max-height: 420px;
   overflow: auto; white-space: pre-wrap; word-break: break-all; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }

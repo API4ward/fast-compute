@@ -54,16 +54,17 @@
     <section data-tab="jobs" class="hidden">
       <div class="panel">
         <div class="row" style="margin-bottom:12px">
-          <h2 style="margin:0">Recent jobs (all users)</h2>
+          <h2 style="margin:0">Recent jobs (all users, read-only)</h2>
           <label>Status <select id="job-status">
             <option value="">any</option><option>running</option><option>queued</option><option>succeeded</option>
-            <option>failed</option><option>timeout</option><option>stopped</option><option>out_of_credits</option><option>error</option>
+            <option>failed</option><option>timeout</option><option>stopped</option><option>out_of_credits</option><option>killed_by_admin</option><option>error</option>
           </select></label>
           <button class="btn" id="jobs-refresh">Refresh</button>
         </div>
+        <p class="muted">Admins see job metadata only — no commands, code or logs, and cannot stop a
+          single job. To stop a user's work, suspend the user (Users → Open).</p>
         <div id="jobs"></div>
       </div>
-      <div class="panel hidden" id="job-detail"></div>
     </section>
 
     <!-- USAGE -->
@@ -85,6 +86,17 @@
 <script src="/static/common.js"></script>
 <script>
 let userNames = {};
+
+function adminJobsTable(jobs) {
+  if (!jobs.length) return el("p", { class: "muted" }, "No jobs.");
+  return table(["ID", "User", "Status", "CPU", "MB", "Started", { label: "Run", num: true },
+    { label: "Cost h", num: true }, { label: "CPU% avg/peak", num: true }, { label: "Mem MB peak", num: true }],
+    jobs.map(j => el("tr", {}, td(j.id), td(userNames[j.user_id] || j.user_id), td(statusBadge(j.status)),
+      td(j.cpus), td(j.mem_mb), td(fmtTime(j.started_at)), td(fmtDur(j.duration_seconds), "num"),
+      td(fmtH(j.cost_hours), "num"),
+      td(j.cpu_avg_pct == null ? "–" : `${j.cpu_avg_pct.toFixed(0)} / ${j.cpu_peak_pct.toFixed(0)}`, "num"),
+      td(j.mem_peak_mb == null ? "–" : j.mem_peak_mb.toFixed(0), "num"))));
+}
 
 async function loadUsers() {
   const box = $("users");
@@ -149,9 +161,19 @@ async function openUser(id) {
   });
 
   const toggle = el("button", { class: "btn " + (u.active ? "danger" : ""), onclick: async () => {
+    if (u.active && !confirm(`Disable ${u.name}? Their tokens stop working; running jobs continue.`)) return;
     try { await api(`/admin/users/${id}/${u.active ? "disable" : "enable"}`, { method: "POST" }); openUser(id); loadUsers(); }
     catch (e) { showMsg(box, e.message); }
-  } }, u.active ? "Disable user" : "Enable user");
+  } }, u.active ? "Disable account" : "Enable account");
+  const suspend = el("button", { class: "btn danger", onclick: async () => {
+    if (!confirm(`Suspend ${u.name}? This disables the account AND kills all of their running jobs.`)) return;
+    suspend.disabled = true;
+    try {
+      const r = await api(`/admin/users/${id}/suspend`, { method: "POST" });
+      showMsg(box, `Suspended. Killed jobs: ${r.killed_job_ids.length ? r.killed_job_ids.join(", ") : "none"}`, true);
+      openUser(id); loadUsers();
+    } catch (e) { showMsg(box, e.message); suspend.disabled = false; }
+  } }, "Suspend (kill all jobs)");
 
   const tokenOut = el("div");
   const newTok = el("button", { class: "btn", onclick: async () => {
@@ -183,7 +205,7 @@ async function openUser(id) {
       el("div", { class: "stat" }, el("div", { class: "v" }, u.active ? "active" : "disabled"), el("div", { class: "k" }, "status"))),
     el("h3", {}, "Limits"), limitsForm,
     el("h3", {}, "Credits"), creditForm,
-    el("h3", {}, "Access"), el("div", { class: "row" }, toggle, newTok), tokenOut, tokensBox,
+    el("h3", {}, "Access"), el("div", { class: "row" }, toggle, suspend, newTok), tokenOut, tokensBox,
     el("h3", {}, "Ledger"), ledgerBox,
     el("h3", {}, "Recent jobs"), jobsBox);
 
@@ -193,8 +215,7 @@ async function openUser(id) {
     rows.map(r => el("tr", {}, td(fmtTime(r.created_at)), td(r.reason), td(fmtH(r.delta_hours, 6), "num"),
       td(fmtH(r.balance_after_hours, 4), "num"), td(r.job_id ?? ""), td(r.admin_id ? (userNames[r.admin_id] || r.admin_id) : ""),
       td(r.note || "", "wrap")))) : el("p", { class: "muted" }, "No entries."))).catch(e => showMsg(box, e.message));
-  api(`/jobs?all=true&limit=500`).then(all => clear(jobsBox).append(
-    jobsTable(all.filter(j => j.user_id === id).slice(0, 20), { onSelect: j => { selectTab("jobs"); showJobDetail($("job-detail"), j, { onChange: loadJobs }); } })))
+  api(`/admin/jobs?user_id=${id}&limit=20`).then(jobs => clear(jobsBox).append(adminJobsTable(jobs)))
     .catch(e => showMsg(box, e.message));
   box.scrollIntoView({ behavior: "smooth" });
 }
@@ -203,9 +224,8 @@ async function loadJobs() {
   const box = $("jobs");
   const st = $("job-status").value;
   try {
-    const jobs = await api(`/jobs?all=true&limit=100${st ? "&status=" + encodeURIComponent(st) : ""}`);
-    clear(box).append(jobsTable(jobs, { showUser: true, userNames,
-      onSelect: j => showJobDetail($("job-detail"), j, { onChange: loadJobs }) }));
+    const jobs = await api(`/admin/jobs?limit=100${st ? "&status=" + encodeURIComponent(st) : ""}`);
+    clear(box).append(adminJobsTable(jobs));
   } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
 }
 

@@ -91,6 +91,31 @@ class JobOut(BaseModel):
     mem_peak_mb: float | None
 
 
+class AdminJobOut(BaseModel):
+    """What an admin may see of any user's job: metadata only (no command, code or logs)."""
+    model_config = {"from_attributes": True}
+    id: int
+    user_id: int
+    image: str
+    cpus: float
+    mem_mb: int
+    timeout_seconds: int
+    network: bool
+    status: str
+    exit_code: int | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_seconds: float | None
+    billed: bool
+    cost_hours: float | None
+    stat_samples: int
+    cpu_avg_pct: float | None
+    cpu_peak_pct: float | None
+    mem_avg_mb: float | None
+    mem_peak_mb: float | None
+
+
 class CreditChange(BaseModel):
     hours: float = Field(description="credit-hours to add (negative to deduct)")
     reason: Literal["topup", "adjust"] = "topup"

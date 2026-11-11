@@ -40,7 +40,8 @@ class JobRunner:
         self._client = client
         self._lock = threading.Lock()
         self._threads: dict[int, threading.Thread] = {}
-        self._stop_requested: set[int] = set()
+        # job_id -> (final status, error note) for jobs being stopped on request
+        self._stop_requested: dict[int, tuple[str, str | None]] = {}
 
     @property
     def client(self) -> docker.DockerClient:
@@ -56,9 +57,9 @@ class JobRunner:
             self._threads[job_id] = t
         t.start()
 
-    def stop(self, job_id: int):
+    def stop(self, job_id: int, status: str = "stopped", note: str | None = None):
         with self._lock:
-            self._stop_requested.add(job_id)
+            self._stop_requested.setdefault(job_id, (status, note))
         with self.Session() as db:
             job = db.get(Job, job_id)
             cid = job.container_id if job else None
@@ -115,6 +116,10 @@ class JobRunner:
     def _stopping(self, job_id):
         with self._lock:
             return job_id in self._stop_requested
+
+    def _stop_info(self, job_id):
+        with self._lock:
+            return self._stop_requested.get(job_id)
 
     def _run(self, job_id: int, filename, content):
         s = self.settings
@@ -194,25 +199,28 @@ class JobRunner:
             self._save_logs(job_id, container)
             container.reload()
             oom = container.attrs.get("State", {}).get("OOMKilled", False)
-            if self._stopping(job_id):
-                status = "stopped"
+            error = "out of memory (OOM killed)" if oom else None
+            stop = self._stop_info(job_id)
+            if stop:
+                status, error = stop[0], stop[1] or error
             elif reason:
                 status = reason
             else:
                 status = "succeeded" if exit_code == 0 else "failed"
-            self._update(job_id, status=status, exit_code=exit_code, finished_at=finished,
-                         error="out of memory (OOM killed)" if oom else None)
+            self._update(job_id, status=status, exit_code=exit_code, finished_at=finished, error=error)
         except _NoCredits:
             self._update(job_id, status="out_of_credits", finished_at=utcnow(),
                          error="not enough credits to start this job")
         except _Stopped:
-            self._update(job_id, status="stopped", finished_at=utcnow())
+            status, note = self._stop_info(job_id) or ("stopped", None)
+            self._update(job_id, status=status, error=note, finished_at=utcnow())
         except WorkspaceError as e:
             self._update(job_id, status="error", error=str(e), finished_at=utcnow())
         except Exception as e:  # noqa: BLE001
             log.exception("job %s failed", job_id)
             self._update(job_id, status="error", error=f"{type(e).__name__}: {e}", finished_at=utcnow())
         finally:
+            self._bill(job_id)  # status is final here; charge before the slower cleanup
             for obj in (container, vol):
                 if obj is not None:
                     try:
@@ -220,8 +228,7 @@ class JobRunner:
                     except DockerException:
                         pass
             with self._lock:
-                self._stop_requested.discard(job_id)
-            self._bill(job_id)
+                self._stop_requested.pop(job_id, None)
 
     def _bill(self, job_id):
         try:

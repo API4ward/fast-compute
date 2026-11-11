@@ -17,7 +17,7 @@ from .billing import (accrued_uh, add_entry, available_uh, cost_uh, grant_initia
 from .config import Settings
 from .models import ACTIVE_STATUSES, TERMINAL_STATUSES, Job, LedgerEntry, Token, User, utcnow
 from .runner import JobRunner
-from .schemas import JobOut, UserOut, ledger_out, usage_totals
+from .schemas import AdminJobOut, JobOut, UserOut, ledger_out, usage_totals
 
 
 class ServiceError(Exception):
@@ -57,8 +57,10 @@ class Services:
 
     @staticmethod
     def get_job(db: Session, user: User, job_id: int) -> Job:
+        """A job of the caller's own. Nobody (not even an admin) can open another user's job;
+        admins only see other users' job metadata via list_user_jobs."""
         job = db.get(Job, job_id)
-        if job is None or (job.user_id != user.id and not user.is_admin):
+        if job is None or job.user_id != user.id:
             raise ServiceError(404, "job not found")
         return job
 
@@ -88,6 +90,37 @@ class Services:
             setattr(u, k, v)
         db.commit()
         return u
+
+    def suspend_user(self, db: Session, admin: User, user_id: int) -> dict:
+        """Disable the account and kill all of the user's active jobs (status killed_by_admin,
+        billed normally for the time they ran)."""
+        self.require_admin(admin)
+        u = self.get_user(db, user_id)
+        if u.id == admin.id:
+            raise ServiceError(400, "admins cannot suspend themselves")
+        u.active = False
+        db.commit()
+        active = db.scalars(select(Job.id).where(Job.user_id == u.id,
+                                                 Job.status.in_(ACTIVE_STATUSES))).all()
+        for jid in active:
+            self.runner.stop(jid, "killed_by_admin", f"killed by admin {admin.name}")
+        for jid in active:
+            self.runner.wait(jid, timeout=30)
+        db.expire_all()
+        return {"user": UserOut.model_validate(self.get_user(db, user_id)).model_dump(mode="json"),
+                "killed_job_ids": list(active)}
+
+    def list_user_jobs(self, db: Session, admin: User, user_id: int | None = None,
+                       status: str | None = None, limit: int = 100) -> list[dict]:
+        """Read-only job metadata for admins (no command, code, git URL or logs)."""
+        self.require_admin(admin)
+        q = select(Job).order_by(Job.id.desc()).limit(max(1, min(limit, 1000)))
+        if user_id is not None:
+            self.get_user(db, user_id)
+            q = q.where(Job.user_id == user_id)
+        if status:
+            q = q.where(Job.status == status)
+        return [AdminJobOut.model_validate(j).model_dump(mode="json") for j in db.scalars(q)]
 
     def list_users(self, db: Session, admin: User) -> list[User]:
         self.require_admin(admin)
@@ -233,11 +266,11 @@ class Services:
                 t.addfile(ti, io.BytesIO(data))
         return buf.getvalue()
 
-    def list_jobs(self, db: Session, user: User, all_users: bool = False,
-                  status: str | None = None, limit: int = 100) -> list[Job]:
+    def list_jobs(self, db: Session, user: User, status: str | None = None,
+                  limit: int = 100) -> list[Job]:
+        """The caller's own jobs (admins included)."""
         q = select(Job).order_by(Job.id.desc()).limit(max(1, min(limit, 1000)))
-        if not (all_users and user.is_admin):
-            q = q.where(Job.user_id == user.id)
+        q = q.where(Job.user_id == user.id)
         if status:
             q = q.where(Job.status == status)
         return db.scalars(q).all()

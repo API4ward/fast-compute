@@ -1,11 +1,16 @@
-"""MCP interface (Streamable HTTP) served by the same FastAPI process at /mcp.
+"""Two MCP services (Streamable HTTP) served by the same FastAPI process.
 
-Auth: the same access tokens as the REST API (`Authorization: Bearer <token>`).
-An ASGI wrapper rejects missing/invalid/disabled tokens with 401 before the MCP
-app sees the request; each tool then resolves the calling user from the request
-headers and goes through the same Services layer as the REST API, so
-permissions, limits and credit checks are identical. Admin tools are hidden
-from non-admins in tools/list and refused if called anyway.
+* /mcp        user service: run and manage *your own* jobs. Every token (admins included)
+               only ever sees and controls its own jobs here.
+* /mcp-admin  admin service (admin tokens only; others get 403): manage users, credits and
+               usage. Admins cannot open, stop or read the logs of an individual user's job;
+               the only way to affect a user's running jobs is suspend_user (disable the
+               account and kill all of that user's jobs).
+
+Auth: the same access tokens as the REST API (`Authorization: Bearer <token>`). An ASGI
+wrapper checks the token (with the shared per-IP failure rate limit) before the MCP app sees
+the request; tools then resolve the caller from the request headers and go through the same
+Services layer as the REST API. DNS-rebinding protection uses DOCKERSERVER_ALLOWED_HOSTS.
 """
 import json
 import time
@@ -15,26 +20,31 @@ from typing import Any
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ListToolsResult, ToolAnnotations
+from mcp.types import ToolAnnotations
 
 from .auth import lookup_user
 from .models import TERMINAL_STATUSES, Job
-from .schemas import JobOut, UserOut, ledger_out
+from .schemas import JobOut, TokenOut, UserOut, ledger_out
 from .services import ServiceError, Services
-
-ADMIN_TOOLS = {"list_users", "create_user", "add_credits", "usage_report"}
 
 PRICING = ("Pricing: 1 credit-hour = 1 CPU core + 256 MB RAM for 1 hour of wall-clock time; a job "
            "costs run_seconds/3600 * max(cpus, mem_mb/256) credit-hours (charged for the reserved "
            "size, not actual use).")
 
-INSTRUCTIONS = f"""DockerServer runs your code in an isolated, throw-away Docker container.
+USER_INSTRUCTIONS = f"""DockerServer runs your code in an isolated, throw-away Docker container.
 Each job: fresh container, read-only root filesystem, writable /workspace (your files / git
 checkout, also the working directory), small /tmp, runs as an unprivileged user, no network
 unless your account allows it and you ask for it, killed at its timeout.
 Defaults: image python:3.12-slim, 1 CPU, 256 MB, your max run time. Call get_balance to see your
 limits and remaining credits. {PRICING} A job is refused unless you can afford 60 s at its size,
-and is stopped (status out_of_credits) if your credits run out while it runs."""
+and is stopped (status out_of_credits) if your credits run out while it runs.
+These tools only ever act on your own jobs."""
+
+ADMIN_INSTRUCTIONS = f"""DockerServer administration: users, limits, credits and usage.
+Admins cannot open, stop or read the logs of an individual user's job. To stop a user's
+activity use set_user_status(active=false) (blocks their tokens and new jobs; running jobs
+continue) or suspend_user (disables the account AND kills all their running jobs, which end
+with status killed_by_admin and are billed for the time they ran). {PRICING}"""
 
 
 def _bearer(headers) -> str | None:
@@ -45,31 +55,12 @@ def _bearer(headers) -> str | None:
     return token.strip() if scheme.lower() == "bearer" and token.strip() else None
 
 
-class _DockerServerMCP(MCPServer):
-    """Hides admin-only tools from non-admin callers in tools/list."""
-
-    def __init__(self, svc: Services, **kw):
-        super().__init__(**kw)
-        self._svc = svc
-
-    async def _handle_list_tools(self, ctx, params) -> ListToolsResult:
-        result = await super()._handle_list_tools(ctx, params)
-        token = _bearer(getattr(getattr(ctx, "request", None), "headers", None))
-        is_admin = False
-        if token:
-            with self._svc.Session() as db:
-                u = lookup_user(db, token)
-                is_admin = bool(u and u.is_admin)
-        if not is_admin:
-            result.tools = [t for t in result.tools if t.name not in ADMIN_TOOLS]
-        return result
-
-
 class _BearerAuth:
-    """ASGI wrapper: 401 unless the request carries a valid, active token."""
+    """ASGI wrapper: 401 unless the request carries a valid, active token (403 if the
+    service needs an admin and the token isn't one); 429 when rate-limited."""
 
-    def __init__(self, app, svc: Services):
-        self.app, self.svc = app, svc
+    def __init__(self, app, svc: Services, require_admin: bool):
+        self.app, self.svc, self.require_admin = app, svc, require_admin
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
@@ -78,24 +69,27 @@ class _BearerAuth:
             err = None
             with self.svc.Session() as db:
                 try:
-                    self.svc.authenticate(db, _bearer(headers), client)
+                    user = self.svc.authenticate(db, _bearer(headers), client)
+                    if self.require_admin and not user.is_admin:
+                        err = ServiceError(403, "this MCP service is for admins only; use /mcp")
                 except ServiceError as e:
                     err = e
             if err is not None:
                 body = json.dumps({"detail": err.message}).encode()
-                extra = [(b"www-authenticate", b"Bearer")] if err.status == 401 else [(b"retry-after", b"60")]
+                extra = {401: [(b"www-authenticate", b"Bearer")], 429: [(b"retry-after", b"60")]}
                 await send({"type": "http.response.start", "status": err.status,
-                            "headers": [(b"content-type", b"application/json")] + extra})
+                            "headers": [(b"content-type", b"application/json")] + extra.get(err.status, [])})
                 await send({"type": "http.response.body", "body": body})
                 return
         await self.app(scope, receive, send)
 
 
-def build_mcp(svc: Services):
-    """Returns (mcp_server, asgi_app). Caller must run mcp.session_manager.run() in its lifespan."""
-    mcp = _DockerServerMCP(svc, name="dockerserver", instructions=INSTRUCTIONS)
+def _jsonable(obj):
+    return json.loads(json.dumps(obj, default=lambda o: o.isoformat() if isinstance(o, datetime) else str(o)))
 
-    def call(ctx: Context, fn, admin: bool = False):
+
+def _caller(svc: Services, admin: bool):
+    def call(ctx: Context, fn):
         """Resolve the caller from the request headers, open a session, run fn(db, user)."""
         token = _bearer(ctx.headers)
         with svc.Session() as db:
@@ -108,13 +102,31 @@ def build_mcp(svc: Services):
                 return fn(db, user)
             except ServiceError as e:
                 raise ToolError(f"{e.status}: {e.message}")
+    return call
+
+
+RO = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+
+
+def _asgi(mcp: MCPServer, svc: Services, path: str, require_admin: bool):
+    st = svc.settings
+    app = mcp.streamable_http_app(
+        streamable_http_path=path, stateless_http=True, json_response=True,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=st.allowed_hosts, allowed_origins=st.allowed_origins))
+    return _BearerAuth(app, svc, require_admin)
+
+
+# ====================================================================================
+def build_user_mcp(svc: Services, path: str = "/mcp"):
+    """Returns (mcp_server, asgi_app). Caller runs mcp.session_manager.run() in its lifespan."""
+    mcp = MCPServer(name="dockerserver", instructions=USER_INSTRUCTIONS)
+    call = _caller(svc, admin=False)
 
     def job_dict(job) -> dict[str, Any]:
         return JobOut.model_validate(job).model_dump(mode="json")
 
-    ro = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
-
-    # ---------------- user tools ----------------
     @mcp.tool(description=(
         "Run a shell command in a fresh isolated container and return the job. Provide code either "
         "as `files` (a {relative_path: text_content} map, for small inline code) or as `git_url` "
@@ -143,10 +155,10 @@ def build_mcp(svc: Services):
         if w:
             deadline = time.monotonic() + w
             svc.runner.wait(job_id, timeout=w)
-            # runner.wait can return before the thread exists; poll status until terminal
             while time.monotonic() < deadline:
                 with svc.Session() as db:
-                    if db.get(Job, job_id).status in TERMINAL_STATUSES:
+                    j = db.get(Job, job_id)
+                    if j.status in TERMINAL_STATUSES and j.billed:
                         break
                 time.sleep(0.3)
 
@@ -161,53 +173,62 @@ def build_mcp(svc: Services):
         return call(ctx, result)
 
     @mcp.tool(description="List my jobs, newest first. Optional status filter (queued, preparing, "
-                          "running, succeeded, failed, timeout, stopped, out_of_credits, error). "
-                          "Admins may set all_users=true.", annotations=ro)
-    def list_jobs(ctx: Context, status: str | None = None, limit: int = 20,
-                  all_users: bool = False) -> list[dict[str, Any]]:
-        return call(ctx, lambda db, u: [job_dict(j) for j in svc.list_jobs(db, u, all_users, status, limit)])
+                          "running, succeeded, failed, timeout, stopped, out_of_credits, "
+                          "killed_by_admin, error).", annotations=RO)
+    def list_jobs(ctx: Context, status: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        return call(ctx, lambda db, u: [job_dict(j) for j in svc.list_jobs(db, u, status, limit)])
 
-    @mcp.tool(description="Get one job: status, exit code, times, cost_hours (once finished), "
-                          "and CPU/memory usage samples.", annotations=ro)
+    @mcp.tool(description="Get one of my jobs: status, exit code, times, cost_hours (once "
+                          "finished), and CPU/memory usage samples.", annotations=RO)
     def get_job(ctx: Context, job_id: int) -> dict[str, Any]:
         return call(ctx, lambda db, u: job_dict(svc.get_job(db, u, job_id)))
 
-    @mcp.tool(description="Get a job's combined stdout/stderr (live while running). "
+    @mcp.tool(description="Get one of my jobs' combined stdout/stderr (live while running). "
                           "`tail` = last N lines (default 200, 0 = everything kept, max 1 MB).",
-              annotations=ro)
+              annotations=RO)
     def get_job_logs(ctx: Context, job_id: int, tail: int = 200) -> str:
         return call(ctx, lambda db, u: svc.logs(db, u, job_id, tail if tail > 0 else None))
 
-    @mcp.tool(description="Stop (kill) a running job. It is charged for the time it ran.",
+    @mcp.tool(description="Stop (kill) one of my running jobs. It is charged for the time it ran.",
               annotations=ToolAnnotations(destructiveHint=True, openWorldHint=False))
     def stop_job(ctx: Context, job_id: int) -> dict[str, Any]:
         return call(ctx, lambda db, u: job_dict(svc.stop_job(db, u, job_id)))
 
     @mcp.tool(description="My credit balance (credit-hours), available credit (balance minus what "
                           "my running jobs have used so far) and my per-job limits. " + PRICING,
-              annotations=ro)
+              annotations=RO)
     def get_balance(ctx: Context) -> dict[str, Any]:
         return call(ctx, lambda db, u: {"user": u.name, **svc.balance(db, u)})
 
     @mcp.tool(description="My usage and spending: totals and per-day totals (jobs, run seconds, "
                           "CPU-hours, GB-hours, cost in credit-hours) for jobs started in "
                           "[start, end) (ISO dates/times, UTC, optional). include_jobs adds the "
-                          "per-job list.", annotations=ro)
+                          "per-job list.", annotations=RO)
     def get_usage(ctx: Context, start: datetime | None = None, end: datetime | None = None,
                   include_jobs: bool = False) -> dict[str, Any]:
         return call(ctx, lambda db, u: _jsonable(svc.my_usage(db, u, start, end, include_jobs)))
 
-    # ---------------- admin tools ----------------
-    @mcp.tool(description="[admin] List all users with role, limits, active flag and balance.",
-              annotations=ro)
-    def list_users(ctx: Context) -> list[dict[str, Any]]:
-        return call(ctx, lambda db, u: [UserOut.model_validate(x).model_dump(mode="json")
-                                        for x in svc.list_users(db, u)], admin=True)
+    return mcp, _asgi(mcp, svc, path, require_admin=False)
 
-    @mcp.tool(description="[admin] Create a user and return its first access token (shown once). "
-                          "Optional limits: max_cpus, max_mem_mb, max_run_seconds, "
-                          "max_concurrent_jobs, allow_network. New users get the default credit "
-                          "grant.")
+
+# ====================================================================================
+def build_admin_mcp(svc: Services, path: str = "/mcp-admin"):
+    """Returns (mcp_server, asgi_app). Admin tokens only."""
+    mcp = MCPServer(name="dockerserver-admin", instructions=ADMIN_INSTRUCTIONS)
+    call = _caller(svc, admin=True)
+
+    def user_dict(u) -> dict[str, Any]:
+        return UserOut.model_validate(u).model_dump(mode="json")
+
+    @mcp.tool(description="List all users with role, limits, active flag and balance (credit-hours).",
+              annotations=RO)
+    def list_users(ctx: Context) -> list[dict[str, Any]]:
+        return call(ctx, lambda db, a: [user_dict(x) for x in svc.list_users(db, a)])
+
+    @mcp.tool(description="Create a user and return its first access token (shown once). "
+                          "role: 'user' or 'admin'. Optional limits: max_cpus, max_mem_mb, "
+                          "max_run_seconds, max_concurrent_jobs, allow_network. New users get the "
+                          "default credit grant.")
     def create_user(ctx: Context, name: str, role: str = "user", max_cpus: float | None = None,
                     max_mem_mb: int | None = None, max_run_seconds: int | None = None,
                     max_concurrent_jobs: int | None = None,
@@ -220,33 +241,81 @@ def build_mcp(svc: Services):
                                      max_run_seconds=max_run_seconds,
                                      max_concurrent_jobs=max_concurrent_jobs,
                                      allow_network=allow_network)
-            return {**UserOut.model_validate(u).model_dump(mode="json"), "token": raw}
-        return call(ctx, run, admin=True)
+            return {**user_dict(u), "token": raw}
+        return call(ctx, run)
 
-    @mcp.tool(description="[admin] Add credit-hours to a user (negative to deduct). reason: "
-                          "'topup' or 'adjust'. Returns the ledger entry with the new balance.")
+    @mcp.tool(description="Enable or disable a user's account. A disabled user's tokens stop "
+                          "working, so they cannot submit or manage jobs; jobs already running "
+                          "are NOT killed (use suspend_user for that).")
+    def set_user_status(ctx: Context, user_id: int, active: bool) -> dict[str, Any]:
+        return call(ctx, lambda db, a: user_dict(svc.update_user(db, a, user_id, {"active": active})))
+
+    @mcp.tool(description="Change a user's per-job limits and/or role. Only the given fields "
+                          "change: max_cpus, max_mem_mb, max_run_seconds, max_concurrent_jobs, "
+                          "allow_network, role ('user'/'admin'). Applies to new jobs only.")
+    def set_user_limits(ctx: Context, user_id: int, max_cpus: float | None = None,
+                        max_mem_mb: int | None = None, max_run_seconds: int | None = None,
+                        max_concurrent_jobs: int | None = None, allow_network: bool | None = None,
+                        role: str | None = None) -> dict[str, Any]:
+        changes = {k: v for k, v in {"max_cpus": max_cpus, "max_mem_mb": max_mem_mb,
+                                     "max_run_seconds": max_run_seconds,
+                                     "max_concurrent_jobs": max_concurrent_jobs,
+                                     "allow_network": allow_network, "role": role}.items()
+                   if v is not None}
+        if not changes:
+            raise ToolError("nothing to change")
+        if role is not None and role not in ("user", "admin"):
+            raise ToolError("role must be 'user' or 'admin'")
+        if (max_cpus is not None and max_cpus <= 0) or (max_mem_mb is not None and max_mem_mb < 32) \
+                or (max_run_seconds is not None and max_run_seconds < 1) \
+                or (max_concurrent_jobs is not None and max_concurrent_jobs < 1):
+            raise ToolError("limits must be positive (max_mem_mb >= 32)")
+        return call(ctx, lambda db, a: user_dict(svc.update_user(db, a, user_id, changes)))
+
+    @mcp.tool(description="Suspend a user: disable the account AND kill all of the user's "
+                          "queued/running jobs (they end with status killed_by_admin and are "
+                          "billed for the time they ran). Re-enable later with set_user_status.",
+              annotations=ToolAnnotations(destructiveHint=True, openWorldHint=False))
+    def suspend_user(ctx: Context, user_id: int) -> dict[str, Any]:
+        return call(ctx, lambda db, a: svc.suspend_user(db, a, user_id))
+
+    @mcp.tool(description="Read-only job metadata (id, user, status, size, times, cost, CPU/memory "
+                          "stats) for one user (user_id) or all users. No commands, code or logs.",
+              annotations=RO)
+    def list_user_jobs(ctx: Context, user_id: int | None = None, status: str | None = None,
+                       limit: int = 50) -> list[dict[str, Any]]:
+        return call(ctx, lambda db, a: svc.list_user_jobs(db, a, user_id, status, limit))
+
+    @mcp.tool(description="Add credit-hours to a user (negative to deduct). reason: 'topup' or "
+                          "'adjust'. Returns the ledger entry with the new balance.")
     def add_credits(ctx: Context, user_id: int, hours: float, reason: str = "topup",
                     note: str | None = None) -> dict[str, Any]:
-        return call(ctx, lambda db, u: _jsonable(ledger_out(
-            svc.change_credits(db, u, user_id, hours, reason, note))), admin=True)
+        return call(ctx, lambda db, a: _jsonable(ledger_out(
+            svc.change_credits(db, a, user_id, hours, reason, note))))
 
-    @mcp.tool(description="[admin] Per-user usage totals (jobs, run seconds, CPU-hours, GB-hours, "
-                          "cost) for jobs started in [start, end) (UTC, optional).", annotations=ro)
+    @mcp.tool(description="A user's credit ledger (top-ups, adjustments, job charges), newest first.",
+              annotations=RO)
+    def get_ledger(ctx: Context, user_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        return call(ctx, lambda db, a: _jsonable(svc.ledger(db, a, user_id, limit)))
+
+    @mcp.tool(description="Per-user usage totals (jobs, run seconds, CPU-hours, GB-hours, cost) for "
+                          "jobs started in [start, end) (UTC, optional).", annotations=RO)
     def usage_report(ctx: Context, start: datetime | None = None,
                      end: datetime | None = None) -> dict[str, Any]:
-        return call(ctx, lambda db, u: _jsonable(svc.usage_report(db, u, start, end)), admin=True)
+        return call(ctx, lambda db, a: _jsonable(svc.usage_report(db, a, start, end)))
 
-    # DNS-rebinding protection: only the configured Host headers (and matching Origins) are
-    # accepted (DOCKERSERVER_ALLOWED_HOSTS), e.g. the public tunnel hostname plus localhost.
-    st = svc.settings
-    app = mcp.streamable_http_app(
-        streamable_http_path="/mcp", stateless_http=True, json_response=True,
-        transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=st.allowed_hosts, allowed_origins=st.allowed_origins))
-    return mcp, _BearerAuth(app, svc)
+    @mcp.tool(description="Issue a new access token for a user (shown once).")
+    def issue_token(ctx: Context, user_id: int, name: str = "mcp") -> dict[str, Any]:
+        def run(db, a):
+            tok, raw = svc.issue_token(db, a, user_id, name)
+            return {**TokenOut.model_validate(tok).model_dump(mode="json"), "token": raw}
+        return call(ctx, run)
 
+    @mcp.tool(description="Revoke an access token by its id (token ids are listed on the admin "
+                          "page and by GET /admin/users/{id}/tokens).",
+              annotations=ToolAnnotations(destructiveHint=True, openWorldHint=False))
+    def revoke_token(ctx: Context, token_id: int) -> dict[str, Any]:
+        return call(ctx, lambda db, a: TokenOut.model_validate(
+            svc.revoke_token(db, a, token_id)).model_dump(mode="json"))
 
-def _jsonable(obj):
-    return json.loads(json.dumps(obj, default=lambda o: o.isoformat() if isinstance(o, datetime) else str(o)))
-
+    return mcp, _asgi(mcp, svc, path, require_admin=True)

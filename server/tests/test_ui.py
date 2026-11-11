@@ -39,7 +39,8 @@ def test_admin_ui_api_calls(client, admin_token):
     assert client.delete(f"/admin/tokens/{toks[0]['id']}", headers=h).status_code == 200
     assert client.post(f"/admin/users/{uid}/disable", headers=h).json()["active"] is False
     assert client.post(f"/admin/users/{uid}/enable", headers=h).json()["active"] is True
-    assert client.get("/jobs?all=true&limit=100&status=running", headers=h).status_code == 200
+    assert client.get("/admin/jobs?limit=100&status=running", headers=h).status_code == 200
+    assert client.get(f"/admin/jobs?user_id={uid}&limit=20", headers=h).status_code == 200
     r = client.get("/admin/usage?start=2026-01-01T00:00:00&end=2030-01-01T00:00:00", headers=h)
     assert r.status_code == 200 and "total" in r.json()
 

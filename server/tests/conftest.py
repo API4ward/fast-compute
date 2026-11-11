@@ -57,7 +57,7 @@ def wait_done(client, tok, job_id, timeout=90):
     end = time.time() + timeout
     while time.time() < end:
         j = client.get(f"/jobs/{job_id}", headers=auth(tok)).json()
-        if j["status"] in TERMINAL_STATUSES:
+        if j["status"] in TERMINAL_STATUSES and j["billed"]:
             return j
         time.sleep(0.5)
     raise AssertionError(f"job {job_id} did not finish: {j}")

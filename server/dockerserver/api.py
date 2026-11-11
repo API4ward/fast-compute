@@ -1,5 +1,5 @@
 """FastAPI application: admin + job endpoints, bearer-token auth."""
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -17,7 +17,7 @@ from .config import Settings, load_settings
 from .billing import grant_missing_initial
 from .models import Token, User, make_session_factory
 from .runner import JobRunner
-from .schemas import (CreditChange, JobOut, LedgerOut, TokenCreate, TokenIssued, TokenOut,
+from .schemas import (AdminJobOut, CreditChange, JobOut, LedgerOut, TokenCreate, TokenIssued, TokenOut,
                       UserCreate, UserCreated, UserOut, UserUpdate, ledger_out)
 from .services import ServiceError, Services
 
@@ -34,27 +34,27 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     with Session_() as db:
         grant_missing_initial(db, settings.default_credit_hours)
 
-    mcp = None
+    mcp_routes = {}
     if enable_mcp:
-        from .mcp_server import build_mcp
-        mcp, mcp_asgi = build_mcp(svc)
+        from .mcp_server import build_admin_mcp, build_user_mcp
+        mcp_routes["/mcp"] = build_user_mcp(svc, "/mcp")
+        mcp_routes["/mcp-admin"] = build_admin_mcp(svc, "/mcp-admin")
 
     @asynccontextmanager
     async def lifespan(_app):
         if recover:
             runner.recover()
-        if mcp is not None:
-            async with mcp.session_manager.run():
-                yield
-        else:
+        async with AsyncExitStack() as stack:
+            for server, _ in mcp_routes.values():
+                await stack.enter_async_context(server.session_manager.run())
             yield
 
     app = FastAPI(title="DockerServer", version=__version__, lifespan=lifespan)
     app.state.settings, app.state.Session, app.state.runner = settings, Session_, runner
     app.state.services = svc
-    if mcp is not None:
-        # Exact-path route (no /mcp -> /mcp/ redirect); the MCP app handles its own auth.
-        app.router.routes.append(Route("/mcp", endpoint=mcp_asgi))
+    for path, (_, asgi) in mcp_routes.items():
+        # Exact-path routes (no /mcp -> /mcp/ redirect); the MCP apps handle their own auth.
+        app.router.routes.append(Route(path, endpoint=asgi))
 
     @app.exception_handler(ServiceError)
     async def _service_error(_req, exc: ServiceError):
@@ -148,6 +148,17 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     def enable_user(user_id: int, db: DB, admin: Admin):
         return svc.update_user(db, admin, user_id, {"active": True})
 
+    @app.post("/admin/users/{user_id}/suspend")
+    def suspend_user(user_id: int, db: DB, admin: Admin):
+        """Disable the account and kill all of the user's running jobs (status killed_by_admin)."""
+        return svc.suspend_user(db, admin, user_id)
+
+    @app.get("/admin/jobs", response_model=list[AdminJobOut])
+    def admin_jobs(db: DB, admin: Admin, user_id: int | None = None, status: str | None = None,
+                   limit: int = 100):
+        """Read-only job metadata across users (no command, code or logs)."""
+        return svc.list_user_jobs(db, admin, user_id, status, limit)
+
     @app.get("/admin/users/{user_id}/tokens", response_model=list[TokenOut])
     def list_tokens(user_id: int, db: DB, _: Admin):
         svc.get_user(db, user_id)
@@ -198,9 +209,9 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
                               filename=filename, content=content)
 
     @app.get("/jobs", response_model=list[JobOut])
-    def list_jobs(db: DB, user: CurrentUser, all: bool = False, status: str | None = None,
-                  limit: int = 100):
-        return svc.list_jobs(db, user, all, status, limit)
+    def list_jobs(db: DB, user: CurrentUser, status: str | None = None, limit: int = 100):
+        """My own jobs (for everyone, admins included)."""
+        return svc.list_jobs(db, user, status, limit)
 
     @app.get("/jobs/{job_id}", response_model=JobOut)
     def get_job(job_id: int, db: DB, user: CurrentUser):

@@ -66,7 +66,8 @@ class Job(Base):
     mem_mb: Mapped[int] = mapped_column(Integer)
     timeout_seconds: Mapped[int] = mapped_column(Integer)
     network: Mapped[bool] = mapped_column(Boolean, default=False)
-    # queued -> preparing -> running -> succeeded | failed | timeout | stopped | error
+    # queued -> preparing -> running ->
+    #   succeeded | failed | timeout | stopped | out_of_credits | killed_by_admin | error
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
     container_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -109,7 +110,8 @@ class LedgerEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
-TERMINAL_STATUSES = {"succeeded", "failed", "timeout", "stopped", "error", "out_of_credits"}
+TERMINAL_STATUSES = {"succeeded", "failed", "timeout", "stopped", "error", "out_of_credits",
+                     "killed_by_admin"}
 ACTIVE_STATUSES = {"queued", "preparing", "running"}
 
 
