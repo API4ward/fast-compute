@@ -74,16 +74,18 @@ class _BearerAuth:
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-            token = _bearer(headers)
-            ok = False
-            if token:
-                with self.svc.Session() as db:
-                    ok = lookup_user(db, token) is not None
-            if not ok:
-                body = json.dumps({"detail": "missing, invalid or revoked bearer token"}).encode()
-                await send({"type": "http.response.start", "status": 401,
-                            "headers": [(b"content-type", b"application/json"),
-                                        (b"www-authenticate", b"Bearer")]})
+            client = (scope.get("client") or ("?", 0))[0]
+            err = None
+            with self.svc.Session() as db:
+                try:
+                    self.svc.authenticate(db, _bearer(headers), client)
+                except ServiceError as e:
+                    err = e
+            if err is not None:
+                body = json.dumps({"detail": err.message}).encode()
+                extra = [(b"www-authenticate", b"Bearer")] if err.status == 401 else [(b"retry-after", b"60")]
+                await send({"type": "http.response.start", "status": err.status,
+                            "headers": [(b"content-type", b"application/json")] + extra})
                 await send({"type": "http.response.body", "body": body})
                 return
         await self.app(scope, receive, send)
@@ -234,11 +236,14 @@ def build_mcp(svc: Services):
                      end: datetime | None = None) -> dict[str, Any]:
         return call(ctx, lambda db, u: _jsonable(svc.usage_report(db, u, start, end)), admin=True)
 
-    # Bearer tokens (not cookies) protect this endpoint, so DNS-rebinding host checks are not
-    # needed and would block access via a public hostname later.
+    # DNS-rebinding protection: only the configured Host headers (and matching Origins) are
+    # accepted (DOCKERSERVER_ALLOWED_HOSTS), e.g. the public tunnel hostname plus localhost.
+    st = svc.settings
     app = mcp.streamable_http_app(
         streamable_http_path="/mcp", stateless_http=True, json_response=True,
-        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=st.allowed_hosts, allowed_origins=st.allowed_origins))
     return mcp, _BearerAuth(app, svc)
 
 

@@ -20,7 +20,7 @@ from dockerserver.models import User
 
 @pytest.fixture
 def server(tmp_path):
-    s = Settings(data_dir=tmp_path, monitor_interval=2)
+    s = Settings(data_dir=tmp_path, monitor_interval=2, allowed_hosts=["127.0.0.1:*"])
     s.logs_dir.mkdir(parents=True)
     app = create_app(s, recover=False)
     with app.state.Session() as db:
@@ -114,3 +114,14 @@ def test_submit_job_with_wait(server):
     async def usage(s):
         return (await s.call_tool("get_usage", {})).structured_content
     assert mcp_call(server["base"], server["user"], usage)["total"]["jobs"] == 1
+
+
+def test_mcp_rejects_unknown_host(server):
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    h = {"Authorization": f"Bearer {server['admin']}", "Accept": "application/json, text/event-stream"}
+    ok = httpx.post(f"{server['base']}/mcp", json=body, headers=h)
+    assert ok.status_code == 200
+    bad = httpx.post(f"{server['base']}/mcp", json=body, headers={**h, "Host": "evil.example.com"})
+    assert bad.status_code in (400, 403, 421)
+    bad_origin = httpx.post(f"{server['base']}/mcp", json=body, headers={**h, "Origin": "https://evil.example.com"})
+    assert bad_origin.status_code in (400, 403)

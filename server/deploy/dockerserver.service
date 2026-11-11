@@ -10,7 +10,7 @@ Group=ubuntu
 SupplementaryGroups=docker
 WorkingDirectory=/home/ubuntu/projects/dockerserver
 EnvironmentFile=-/etc/dockerserver.env
-ExecStart=/home/ubuntu/projects/dockerserver/.venv/bin/uvicorn dockerserver.main:app --host 127.0.0.1 --port 8800 --no-access-log
+ExecStart=/home/ubuntu/projects/dockerserver/.venv/bin/uvicorn dockerserver.main:app --host 127.0.0.1 --port 8800 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
 Restart=on-failure
 RestartSec=3
 # Keep the API process small on this 1 GB host (job containers are separate cgroups).

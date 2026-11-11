@@ -44,6 +44,8 @@ Environment variables (all optional):
 | `DOCKERSERVER_DEFAULT_CREDIT_HOURS` | `1000` | credits granted to each new user |
 | `DOCKERSERVER_MONITOR_INTERVAL` | `10` | seconds between `docker stats` samples / credit checks |
 | `DOCKERSERVER_MIN_START_SECONDS` | `60` | a job starts only if the balance covers this long at its size |
+| `DOCKERSERVER_ALLOWED_HOSTS` | `127.0.0.1:8800,localhost:8800,compute.llmfreedomforge.com` | Host headers accepted by `/mcp` (`host:*` = any port) |
+| `DOCKERSERVER_AUTH_FAIL_LIMIT` / `_WINDOW` | `20` / `300` | bad tokens per client IP per window before HTTP 429 |
 
 ## API
 
@@ -117,6 +119,40 @@ The unit runs as `ubuntu` with the `docker` group, on 127.0.0.1:8800,
 `Restart=on-failure`, `MemoryHigh=200M` / `MemoryMax=350M`.
 Logs: `journalctl -u dockerserver -f`.
 
+## Public access via Cloudflare Tunnel
+
+The service only listens on 127.0.0.1:8800; the public URL
+**https://compute.llmfreedomforge.com** reaches it through a Cloudflare Tunnel (outbound-only,
+no open inbound ports, TLS terminated by Cloudflare).
+
+1. Install cloudflared (official apt repo; does not start anything):
+   `sudo sh deploy/install-cloudflared.sh`
+2. In the Cloudflare dashboard (Zero Trust → Networks → Tunnels) create a **new** tunnel for this
+   server, with public hostname `compute.llmfreedomforge.com` → service `http://127.0.0.1:8800`.
+   Leave "HTTP Host Header" unset so the original host is passed through (it must match
+   `DOCKERSERVER_ALLOWED_HOSTS`).
+3. Run the `sudo cloudflared service install <token>` command the dashboard shows (the token stays
+   with you), then `systemctl status cloudflared`.
+4. Check: `curl -sI https://compute.llmfreedomforge.com/health`.
+
+The app is proxy-aware: uvicorn runs with `--proxy-headers --forwarded-allow-ips=127.0.0.1`, so the
+client IP from Cloudflare is used for the auth-failure rate limit. Pages use only relative URLs
+and a same-origin CSP, so they work unchanged over HTTPS.
+
+Public endpoints:
+
+- Web: https://compute.llmfreedomforge.com/ui and https://compute.llmfreedomforge.com/admin-ui
+- REST: `https://compute.llmfreedomforge.com/jobs` etc. (`/docs` for the OpenAPI UI)
+- MCP: `https://compute.llmfreedomforge.com/mcp`
+
+```bash
+claude mcp add --transport http dockerserver https://compute.llmfreedomforge.com/mcp \
+  --header "Authorization: Bearer ds_YOUR_TOKEN"
+```
+
+Only give tokens to people you trust: a token lets its holder run code (within their limits)
+on this server.
+
 ## MCP interface
 
 The same server exposes an [MCP](https://modelcontextprotocol.io) endpoint at **`/mcp`**
@@ -157,8 +193,8 @@ Desktop talks to remote HTTP servers through the `mcp-remote` bridge (needs Node
 (If the server is reachable over HTTPS from the internet, it can instead be added in
 Claude Desktop / claude.ai under Settings → Connectors → Add custom connector — but connectors
 there authenticate with OAuth, not a static header, so the bridge above is the simple route
-for now.) Use plain `http://` only on localhost or a private network; put HTTPS in front before
-exposing the port.
+for now.) Use plain `http://` only on localhost or a private network; publicly, use the HTTPS tunnel URL
+(see above).
 
 Quick check without a client:
 

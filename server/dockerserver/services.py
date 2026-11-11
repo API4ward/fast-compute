@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .auth import issue_token
+from .auth import AuthFailureLimiter, issue_token, lookup_user
 from .billing import (accrued_uh, add_entry, available_uh, cost_uh, grant_initial, hours,
                       to_uh)
 from .config import Settings
@@ -29,6 +29,18 @@ class ServiceError(Exception):
 class Services:
     def __init__(self, settings: Settings, session_factory, runner: JobRunner):
         self.settings, self.Session, self.runner = settings, session_factory, runner
+        self.auth_limiter = AuthFailureLimiter(settings.auth_fail_limit, settings.auth_fail_window)
+
+    def authenticate(self, db: Session, token: str | None, client_ip: str) -> User:
+        """Resolve a bearer token to an active user; rate-limits repeated failures per IP."""
+        if self.auth_limiter.blocked(client_ip):
+            raise ServiceError(429, "too many failed authentication attempts; try again later")
+        user = lookup_user(db, token) if token else None
+        if user is None:
+            if token:
+                self.auth_limiter.record_failure(client_ip)
+            raise ServiceError(401, "missing, invalid or revoked bearer token")
+        return user
 
     # ----- helpers -----
     @staticmethod

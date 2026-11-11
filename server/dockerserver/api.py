@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session
 from starlette.routing import Route
 
 from . import __version__
-from .auth import lookup_user
 from .config import Settings, load_settings
 from .billing import grant_missing_initial
 from .models import Token, User, make_session_factory
@@ -67,13 +66,14 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
 
     DB = Annotated[Session, Depends(get_db)]
 
-    def current_user(db: DB, cred: HTTPAuthorizationCredentials | None = Depends(bearer)) -> User:
-        if cred is None or cred.scheme.lower() != "bearer":
-            raise HTTPException(401, "missing bearer token", headers={"WWW-Authenticate": "Bearer"})
-        user = lookup_user(db, cred.credentials)
-        if user is None:
-            raise HTTPException(401, "invalid or revoked token", headers={"WWW-Authenticate": "Bearer"})
-        return user
+    def current_user(request: Request, db: DB,
+                     cred: HTTPAuthorizationCredentials | None = Depends(bearer)) -> User:
+        token = cred.credentials if cred is not None and cred.scheme.lower() == "bearer" else None
+        try:
+            return svc.authenticate(db, token, request.client.host if request.client else "?")
+        except ServiceError as e:
+            headers = {"WWW-Authenticate": "Bearer"} if e.status == 401 else {"Retry-After": "60"}
+            raise HTTPException(e.status, e.message, headers=headers)
 
     CurrentUser = Annotated[User, Depends(current_user)]
 

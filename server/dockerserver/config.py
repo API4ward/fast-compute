@@ -22,6 +22,15 @@ class Settings:
     tmp_size: str = field(default_factory=lambda: _env("TMP_SIZE", "64m"))
     git_timeout: int = field(default_factory=lambda: int(_env("GIT_TIMEOUT", "120")))
     container_user: str = "65534:65534"  # nobody:nogroup
+    # Host header values accepted by /mcp (DNS-rebinding protection). "host:*" = any port.
+    allowed_hosts: list[str] = field(default_factory=lambda: [
+        h.strip() for h in _env("ALLOWED_HOSTS",
+                                "127.0.0.1:8800,localhost:8800,compute.llmfreedomforge.com").split(",")
+        if h.strip()])
+    # Auth-failure rate limit: more than AUTH_FAIL_LIMIT bad tokens from one client IP
+    # within AUTH_FAIL_WINDOW seconds -> HTTP 429 until the window passes.
+    auth_fail_limit: int = field(default_factory=lambda: int(_env("AUTH_FAIL_LIMIT", "20")))
+    auth_fail_window: int = field(default_factory=lambda: int(_env("AUTH_FAIL_WINDOW", "300")))
     # Credits given to every new user (hours of 1 CPU + 256 MB).
     default_credit_hours: float = field(default_factory=lambda: float(_env("DEFAULT_CREDIT_HOURS", "1000")))
     # How often a running job is sampled (docker stats) and checked against the balance.
@@ -36,6 +45,10 @@ class Settings:
     @property
     def logs_dir(self) -> Path:
         return self.data_dir / "logs"
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        return [f"{scheme}://{h}" for h in self.allowed_hosts for scheme in ("https", "http")]
 
     def image_allowed(self, image: str) -> bool:
         return "*" in self.allowed_images or image in self.allowed_images
