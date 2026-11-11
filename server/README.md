@@ -13,7 +13,7 @@ jobs, isolation). Credit billing, an MCP interface and an admin web page come la
 ## Setup
 
 ```bash
-cd /home/ubuntu/projects/dockerserver
+cd fast-compute/server
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 docker pull python:3.12-slim
@@ -109,7 +109,7 @@ Sign in by pasting a token (kept in the tab's `sessionStorage`, gone when the ta
 
 ## Configuration file
 
-All configuration lives **in the project**, in `/home/ubuntu/projects/dockerserver/.env`
+All configuration lives **in the project**, in `server/.env`
 (git-ignored, owned by ubuntu, mode 600). The app reads it itself at startup
 (`DOCKERSERVER_ENV_FILE` overrides the path) and its values override inherited environment
 variables; the startup log prints `config file: ... (loaded)`. Every setting is documented in the
@@ -180,7 +180,7 @@ Let's Encrypt certificate) and reverse-proxies to it.
    certificate challenge and the HTTP→HTTPS redirect). Port **8800 must NOT be open**.
 3. **Install Caddy** (official apt repo): `sudo sh deploy/install-caddy.sh`. The site config lives
    in the project, **`deploy/Caddyfile`**; `/etc/caddy/Caddyfile` only contains
-   `import /home/ubuntu/projects/dockerserver/deploy/Caddyfile` (the script also adds the `caddy`
+   `import <path to server/>/deploy/Caddyfile` (the script also adds the `caddy`
    user to the `ubuntu` group so it can read it; `.env` stays 600). Edit `deploy/Caddyfile` and run
    `sudo systemctl reload caddy`. It reverse-proxies to 127.0.0.1:8800, keeps the Host header,
    sets HSTS / nosniff / no-referrer, caps request bodies at 60 MB and allows 120 s responses.

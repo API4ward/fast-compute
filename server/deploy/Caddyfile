@@ -1,5 +1,5 @@
 # Caddy site config for DockerServer. Edit HERE (in the project); /etc/caddy/Caddyfile only
-# contains:  import /home/ubuntu/projects/dockerserver/deploy/Caddyfile
+# contains:  import <path to server/>/deploy/Caddyfile   (written by deploy/install-caddy.sh)
 # Apply changes with:  sudo systemctl reload caddy
 #
 # DockerServer listens on 127.0.0.1:8800 only; Caddy terminates HTTPS (automatic certificate)

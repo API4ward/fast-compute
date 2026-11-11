@@ -79,7 +79,8 @@ def _bool(name, default: bool | None) -> bool | None:
 
 @dataclass
 class Settings:
-    data_dir: Path = field(default_factory=lambda: Path(_env("DATA_DIR", "./data")).resolve())
+    # relative paths are resolved against the project directory (server/)
+    data_dir: Path = field(default_factory=lambda: (PROJECT_DIR / _env("DATA_DIR", "data")).resolve())
     default_image: str = field(default_factory=lambda: _env("DEFAULT_IMAGE", "python:3.12-slim"))
     # Comma-separated allowlist of images users may request ("*" = any).
     allowed_images: list[str] = field(

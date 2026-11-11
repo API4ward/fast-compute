@@ -4,11 +4,13 @@
 # stays in the project's .env. A leftover /etc/dockerserver.env is no longer used and can be deleted.
 set -eu
 cd "$(dirname "$0")/.."
-install -m 644 deploy/dockerserver.service /etc/systemd/system/dockerserver.service
+REPO="$(pwd)"
+sed "s#@REPO@#$REPO#g" deploy/dockerserver.service > /etc/systemd/system/dockerserver.service
+chmod 644 /etc/systemd/system/dockerserver.service
 # Configuration lives in the project: .env (mode 600, owned by ubuntu), created from .env.example.
 [ -f .env ] || install -m 600 -o ubuntu -g ubuntu .env.example .env
 # stop a manually started (nohup) instance, if any
-pkill -u ubuntu -f '^/home/ubuntu/projects/dockerserver/.venv/bin/python3 .venv/bin/uvicorn' || true
+pkill -u ubuntu -f 'bin/uvicorn dockerserver.main:app' || true
 sleep 1
 systemctl daemon-reload
 systemctl enable --now dockerserver
