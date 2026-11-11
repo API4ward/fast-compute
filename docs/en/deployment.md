@@ -21,9 +21,10 @@ users / AI assistants ──HTTPS──▶ Cloudflare ──▶ Caddy :443 ─�
 
 ## Bridge (`server/`)
 
-The live bridge currently runs from `/home/ubuntu/projects/dockerserver` (same code as `server/`);
-`deploy/dockerserver.service` and `deploy/Caddyfile` contain that path — adjust them if you deploy
-from another directory.
+The live bridge runs from `/home/ubuntu/projects/fast-compute/server`. The deploy scripts use
+whatever directory they are run from (`install-service.sh` fills the path into the unit file;
+`install-caddy.sh` imports that directory's `deploy/Caddyfile`), and a relative
+`DOCKERSERVER_DATA_DIR` is resolved against `server/`.
 
 ```bash
 cd server
@@ -43,7 +44,7 @@ the log shows `config file: …/.env (loaded)`. Template with every key: `server
 
 | Setting | Default | |
 |---|---|---|
-| `DOCKERSERVER_DATA_DIR` | `./data` | SQLite DB and saved job logs |
+| `DOCKERSERVER_DATA_DIR` | `data` (under `server/`) | SQLite DB and saved job logs |
 | `DOCKERSERVER_ALLOWED_IMAGES` / `DEFAULT_IMAGE` | `python:3.12-slim` | image allow-list / default |
 | `DOCKERSERVER_MAX_UPLOAD_BYTES` | 50 MB | upload / workspace cap |
 | `DOCKERSERVER_DEFAULT_CREDIT_HOURS` | 1000 | grant for new users |

@@ -21,8 +21,9 @@
 
 ## 网关（`server/`）
 
-目前线上网关运行在 `/home/ubuntu/projects/dockerserver`（代码与 `server/` 相同）；
-`deploy/dockerserver.service` 和 `deploy/Caddyfile` 里写的是这个路径，如果从其他目录部署需要修改。
+线上网关运行在 `/home/ubuntu/projects/fast-compute/server`。部署脚本使用它们所在的目录
+（`install-service.sh` 会把路径填入 unit 文件；`install-caddy.sh` 引入该目录下的
+`deploy/Caddyfile`），相对路径的 `DOCKERSERVER_DATA_DIR` 以 `server/` 为基准。
 
 ```bash
 cd server
@@ -42,7 +43,7 @@ sudo sh deploy/install-service.sh             # systemd 服务（只有 unit 文
 
 | 配置项 | 默认值 | |
 |---|---|---|
-| `DOCKERSERVER_DATA_DIR` | `./data` | SQLite 数据库和任务日志 |
+| `DOCKERSERVER_DATA_DIR` | `data`（相对 `server/`） | SQLite 数据库和任务日志 |
 | `DOCKERSERVER_ALLOWED_IMAGES` / `DEFAULT_IMAGE` | `python:3.12-slim` | 镜像白名单 / 默认镜像 |
 | `DOCKERSERVER_MAX_UPLOAD_BYTES` | 50 MB | 上传 / 工作目录大小上限 |
 | `DOCKERSERVER_DEFAULT_CREDIT_HOURS` | 1000 | 新用户初始额度 |
