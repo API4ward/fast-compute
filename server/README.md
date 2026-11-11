@@ -122,25 +122,28 @@ The unit runs as `ubuntu` with the `docker` group, on 127.0.0.1:8800,
 `Restart=on-failure`, `MemoryHigh=200M` / `MemoryMax=350M`.
 Logs: `journalctl -u dockerserver -f`.
 
-## Public access via Cloudflare Tunnel
+## Public access (HTTPS via Caddy)
 
-The service only listens on 127.0.0.1:8800; the public URL
-**https://compute.llmfreedomforge.com** reaches it through a Cloudflare Tunnel (outbound-only,
-no open inbound ports, TLS terminated by Cloudflare).
+aws-london has a public IP, so no tunnel is needed. DockerServer stays bound to
+**127.0.0.1:8800**; [Caddy](https://caddyserver.com) terminates HTTPS on ports 80/443 (automatic
+Let's Encrypt certificate) and reverse-proxies to it.
 
-1. Install cloudflared (official apt repo; does not start anything):
-   `sudo sh deploy/install-cloudflared.sh`
-2. In the Cloudflare dashboard (Zero Trust → Networks → Tunnels) create a **new** tunnel for this
-   server, with public hostname `compute.llmfreedomforge.com` → service `http://127.0.0.1:8800`.
-   Leave "HTTP Host Header" unset so the original host is passed through (it must match
-   `DOCKERSERVER_ALLOWED_HOSTS`).
-3. Run the `sudo cloudflared service install <token>` command the dashboard shows (the token stays
-   with you), then `systemctl status cloudflared`.
-4. Check: `curl -sI https://compute.llmfreedomforge.com/health`.
+1. **DNS:** A record `compute.llmfreedomforge.com` → the host's public IPv4 (13.43.223.101 at the
+   time of writing; check with `curl -s https://checkip.amazonaws.com`). Use an Elastic IP if the
+   instance's IP may change.
+2. **AWS security group:** inbound TCP **80** and **443** from anywhere (80 is needed for the
+   certificate challenge and the HTTP→HTTPS redirect). Port **8800 must NOT be open**.
+3. **Install Caddy** (official apt repo) and write `/etc/caddy/Caddyfile`:
+   `sudo sh deploy/install-caddy.sh` (other domain: `sudo DOCKERSERVER_DOMAIN=example.com sh deploy/install-caddy.sh`,
+   and add it to `DOCKERSERVER_ALLOWED_HOSTS`). The site block reverse-proxies to 127.0.0.1:8800,
+   keeps the Host header, sets HSTS / nosniff / no-referrer, caps request bodies at 60 MB and allows
+   120 s responses (MCP `wait`).
+4. **Check:** `curl -sI https://compute.llmfreedomforge.com/health`; logs: `journalctl -u caddy -f`.
 
 The app is proxy-aware: uvicorn runs with `--proxy-headers --forwarded-allow-ips=127.0.0.1`, so the
-client IP from Cloudflare is used for the auth-failure rate limit. Pages use only relative URLs
-and a same-origin CSP, so they work unchanged over HTTPS.
+client IP from Caddy's `X-Forwarded-For` is used for the auth-failure rate limit, and `/mcp`'s
+host check accepts `compute.llmfreedomforge.com` (`DOCKERSERVER_ALLOWED_HOSTS`). Pages use only
+relative URLs and a same-origin CSP, so they work unchanged over HTTPS.
 
 Public endpoints:
 
@@ -192,7 +195,7 @@ controls their **own** jobs here.
 Admins cannot open, stop or read the logs of an individual user's job — not via MCP, REST or
 the admin page. The only way to affect a user's running jobs is `suspend_user`.
 
-**Claude Code** (replace HOST with `127.0.0.1` locally; publicly see the tunnel section above):
+**Claude Code** (replace HOST with `127.0.0.1` locally; publicly use https://compute.llmfreedomforge.com, see "Public access" above):
 
 ```bash
 claude mcp add --transport http dockerserver http://HOST:8800/mcp \
@@ -220,7 +223,7 @@ Desktop talks to remote HTTP servers through the `mcp-remote` bridge (needs Node
 (If the server is reachable over HTTPS from the internet, it can instead be added in
 Claude Desktop / claude.ai under Settings → Connectors → Add custom connector — but connectors
 there authenticate with OAuth, not a static header, so the bridge above is the simple route
-for now.) Use plain `http://` only on localhost or a private network; publicly, use the HTTPS tunnel URL
+for now.) Use plain `http://` only on localhost or a private network; publicly, use the HTTPS URL
 (see above).
 
 Quick check without a client:
