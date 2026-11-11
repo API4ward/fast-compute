@@ -150,5 +150,9 @@ def load_settings() -> Settings:
     load_env_file(env_file, override=True)
     log.warning("config file: %s (%s)", env_file, "loaded" if env_file.exists() else "not found")
     s = Settings()
+    if not s.nodes and not _env("NODES", "").strip() and any(
+            k.startswith("DOCKERSERVER_NODE_TOKEN") and v.strip() for k, v in os.environ.items()):
+        log.warning("a DOCKERSERVER_NODE_TOKEN_* variable is set but DOCKERSERVER_NODES is empty: "
+                    "no compute node is configured (see .env.example)")
     s.logs_dir.mkdir(parents=True, exist_ok=True)
     return s

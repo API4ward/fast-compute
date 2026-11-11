@@ -18,4 +18,6 @@ sleep 3
 systemctl restart dockerserver
 sleep 3
 systemctl --no-pager --lines=5 status dockerserver
-curl -fsS http://127.0.0.1:8800/health && echo
+# the app needs a few seconds to start
+for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8800/health 2>/dev/null && echo && exit 0; sleep 1; done
+echo "health check failed: see journalctl -u dockerserver" >&2; exit 1

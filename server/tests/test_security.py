@@ -50,3 +50,15 @@ def test_project_env_file_is_loaded_and_wins(tmp_path, monkeypatch):
     s = load_settings()
     assert s.default_max_cpus == 3 and str(s.data_dir) == f"{tmp_path}/d"
     assert s.nodes == [] and s.use_local          # empty token -> node skipped -> local mode
+
+
+def test_warns_when_token_set_without_nodes(tmp_path, monkeypatch, caplog):
+    from dockerserver.config import load_settings
+    env = tmp_path / ".env"
+    env.write_text(f"DOCKERSERVER_DATA_DIR={tmp_path}/d\nDOCKERSERVER_NODE_TOKEN_MINI=abc\n")
+    monkeypatch.setenv("DOCKERSERVER_ENV_FILE", str(env))
+    for k in ("DOCKERSERVER_DATA_DIR", "DOCKERSERVER_NODE_TOKEN_MINI", "DOCKERSERVER_NODES"):
+        monkeypatch.setenv(k, "")
+    with caplog.at_level("WARNING"):
+        s = load_settings()
+    assert s.nodes == [] and "DOCKERSERVER_NODES is empty" in caplog.text
