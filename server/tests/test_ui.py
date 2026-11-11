@@ -55,3 +55,31 @@ def test_user_ui_api_calls(client, admin_token):
     assert client.get("/jobs?limit=50", headers=h).json() == []
     # the admin page rejects non-admin tokens: its first admin call is 403
     assert client.get("/admin/users", headers=h).status_code == 403
+
+
+def test_login_form_shown_without_token(client):
+    # Regression: both panels start hidden; with no stored token the sign-in form must be
+    # revealed (it used to stay hidden -> blank page on first visit).
+    js = client.get("/static/common.js").text
+    i = js.index("if (getToken())")
+    assert 'login.classList.remove("hidden")' in js[i:i + 300]
+    for page in ("/admin-ui", "/ui"):
+        html = client.get(page).text
+        assert 'id="login"' in html and 'id="token-input"' in html
+
+
+def test_admin_aliases_redirect(client):
+    for path in ("/admin", "/admin-ui/"):
+        r = client.get(path, follow_redirects=False)
+        assert r.status_code == 307 and r.headers["location"] == "/admin-ui"
+    assert client.get("/ui/", follow_redirects=False).headers["location"] == "/ui"
+
+
+def test_assets_are_cache_busted(client):
+    import re
+    html = client.get("/admin-ui").text
+    js = re.search(r'src="(/static/common\.js\?v=[0-9a-f]{12})"', html)
+    css = re.search(r'href="(/static/common\.css\?v=[0-9a-f]{12})"', html)
+    assert js and css
+    r = client.get(js.group(1))
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"

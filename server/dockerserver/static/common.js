@@ -85,7 +85,12 @@ async function initLogin({ requireAdmin, onReady }) {
     tryStart();
   });
   $("logout").addEventListener("click", () => { setToken(null); location.reload(); });
-  if (getToken()) tryStart();
+  if (getToken()) {
+    tryStart();
+  } else {
+    login.classList.remove("hidden");   // no token yet: show the sign-in form
+    $("token-input").focus();
+  }
 }
 
 function setupTabs(onShow) {

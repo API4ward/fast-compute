@@ -1,11 +1,12 @@
 """FastAPI application: admin + job endpoints, bearer-token auth."""
+import hashlib
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
@@ -22,6 +23,15 @@ from .schemas import (AdminJobOut, CreditChange, JobOut, LedgerOut, TokenCreate,
 from .services import ServiceError, Services
 
 bearer = HTTPBearer(auto_error=False)
+
+
+class _NoCacheStatic(StaticFiles):
+    """Static assets must always be revalidated (pages also reference them with ?v=<hash>)."""
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
 
 
 # ---------- app factory ----------
@@ -85,7 +95,15 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
 
     # ----- web pages (static; they only call this REST API) -----
     static_dir = Path(__file__).parent / "static"
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    app.mount("/static", _NoCacheStatic(directory=static_dir), name="static")
+
+    def render_page(name: str) -> HTMLResponse:
+        # Asset URLs carry a content hash so browsers / Cloudflare never serve a stale copy.
+        html = (static_dir / name).read_text()
+        for asset in ("common.js", "common.css"):
+            digest = hashlib.sha256((static_dir / asset).read_bytes()).hexdigest()[:12]
+            html = html.replace(f"/static/{asset}\"", f"/static/{asset}?v={digest}\"")
+        return HTMLResponse(html, headers=page_headers)
     page_headers = {
         "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; "
                                    "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
@@ -96,14 +114,23 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
 
     @app.get("/admin-ui", include_in_schema=False)
     def admin_ui():
-        return FileResponse(static_dir / "admin.html", headers=page_headers)
+        return render_page("admin.html")
 
     @app.get("/ui", include_in_schema=False)
     def user_ui():
-        return FileResponse(static_dir / "user.html", headers=page_headers)
+        return render_page("user.html")
 
     @app.get("/", include_in_schema=False)
     def root():
+        return RedirectResponse("/ui")
+
+    @app.get("/admin", include_in_schema=False)
+    @app.get("/admin-ui/", include_in_schema=False)
+    def admin_alias():
+        return RedirectResponse("/admin-ui")
+
+    @app.get("/ui/", include_in_schema=False)
+    def ui_alias():
         return RedirectResponse("/ui")
 
     # ----- misc -----
