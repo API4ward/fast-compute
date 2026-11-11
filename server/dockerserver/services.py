@@ -68,7 +68,12 @@ class Services:
     def create_user(self, db: Session, admin: User, name: str, role: str = "user",
                     **limits) -> tuple[User, str]:
         self.require_admin(admin)
-        u = User(name=name, role=role, **{k: v for k, v in limits.items() if v is not None})
+        st = self.settings
+        defaults = {"max_cpus": st.default_max_cpus, "max_mem_mb": st.default_max_mem_mb,
+                    "max_run_seconds": st.default_max_run_seconds,
+                    "max_concurrent_jobs": st.default_max_concurrent_jobs}
+        defaults.update({k: v for k, v in limits.items() if v is not None})
+        u = User(name=name, role=role, **defaults)
         db.add(u)
         try:
             db.flush()
@@ -235,6 +240,9 @@ class Services:
             raise ServiceError(400, "git_url must be an https:// URL")
         if content is not None and len(content) > s.max_upload_bytes:
             raise ServiceError(413, "upload too large")
+        never = getattr(self.runner, "never_fits", lambda c, m: None)(cpus, mem_mb)
+        if never:
+            raise ServiceError(400, never)
         need = cost_uh(cpus, mem_mb, s.min_start_seconds)
         if available_uh(db, user.id) < need:
             raise ServiceError(402, f"not enough credits: need at least {hours(need):.4f} hours "

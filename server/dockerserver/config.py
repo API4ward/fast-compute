@@ -1,11 +1,72 @@
-"""Settings, read from environment variables (prefix DOCKERSERVER_)."""
+"""Settings, read from environment variables (prefix DOCKERSERVER_).
+
+load_settings() first loads KEY=VALUE lines from DOCKERSERVER_ENV_FILE (default
+/etc/dockerserver.env, if readable); variables already set in the environment win.
+Secrets such as compute-node tokens live only there / in the environment, never in git.
+"""
+import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+log = logging.getLogger("dockerserver.config")
+
 
 def _env(name, default):
     return os.environ.get(f"DOCKERSERVER_{name}", default)
+
+
+def load_env_file(path: Path) -> None:
+    try:
+        text = path.read_text()
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+            v = v[1:-1]
+        os.environ.setdefault(k.strip(), v)
+
+
+@dataclass
+class NodeConfig:
+    name: str
+    url: str
+    token: str = field(repr=False)
+
+
+def parse_nodes(raw: str | None) -> list[NodeConfig]:
+    """DOCKERSERVER_NODES = JSON list of {name, url, token_env}; the token is read from the
+    environment variable named by token_env. Nodes without a token are skipped (warned)."""
+    if not raw or not raw.strip():
+        return []
+    try:
+        items = json.loads(raw)
+    except ValueError as e:
+        raise SystemExit(f"DOCKERSERVER_NODES is not valid JSON: {e}")
+    nodes = []
+    for it in items:
+        name, url, token_env = it.get("name"), it.get("url"), it.get("token_env")
+        if not (name and url and token_env):
+            raise SystemExit(f"DOCKERSERVER_NODES entry needs name, url and token_env: {it!r}")
+        token = os.environ.get(token_env, "").strip()
+        if not token:
+            log.warning("compute node %s: env var %s is not set; node disabled", name, token_env)
+            continue
+        nodes.append(NodeConfig(name, url, token))
+    return nodes
+
+
+def _bool(name, default: bool | None) -> bool | None:
+    v = _env(name, None)
+    if v is None or v.strip() == "":
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -38,6 +99,27 @@ class Settings:
     # A job may start only if the balance covers this many seconds at its size.
     min_start_seconds: int = field(default_factory=lambda: int(_env("MIN_START_SECONDS", "60")))
 
+    # ---- compute nodes / scheduling ----
+    nodes: list[NodeConfig] = field(default_factory=lambda: parse_nodes(_env("NODES", "")))
+    # Run jobs on this host's Docker. Default: only when no compute node is configured.
+    local_execution: bool | None = field(default_factory=lambda: _bool("LOCAL_EXECUTION", None))
+    node_info_ttl: float = field(default_factory=lambda: float(_env("NODE_INFO_TTL", "5")))
+    node_poll_interval: float = field(default_factory=lambda: float(_env("NODE_POLL_INTERVAL", "2")))
+    # A running job whose node can't be reached for this long is marked "lost".
+    node_lost_grace: float = field(default_factory=lambda: float(_env("NODE_LOST_GRACE", "120")))
+    # A job waiting for capacity is retried every QUEUE_RETRY s, for at most QUEUE_TIMEOUT s.
+    queue_retry: float = field(default_factory=lambda: float(_env("QUEUE_RETRY", "5")))
+    queue_timeout: float = field(default_factory=lambda: float(_env("QUEUE_TIMEOUT", "3600")))
+    # Limits given to newly created users (admins can change them per user).
+    default_max_cpus: float = field(default_factory=lambda: float(_env("DEFAULT_MAX_CPUS", "1")))
+    default_max_mem_mb: int = field(default_factory=lambda: int(_env("DEFAULT_MAX_MEM_MB", "256")))
+    default_max_run_seconds: int = field(default_factory=lambda: int(_env("DEFAULT_MAX_RUN_SECONDS", "600")))
+    default_max_concurrent_jobs: int = field(default_factory=lambda: int(_env("DEFAULT_MAX_CONCURRENT_JOBS", "2")))
+
+    @property
+    def use_local(self) -> bool:
+        return self.local_execution if self.local_execution is not None else not self.nodes
+
     @property
     def db_url(self) -> str:
         return f"sqlite:///{self.data_dir / 'dockerserver.db'}"
@@ -55,6 +137,7 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    load_env_file(Path(os.environ.get("DOCKERSERVER_ENV_FILE", "/etc/dockerserver.env")))
     s = Settings()
     s.logs_dir.mkdir(parents=True, exist_ok=True)
     return s

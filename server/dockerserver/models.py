@@ -67,8 +67,11 @@ class Job(Base):
     timeout_seconds: Mapped[int] = mapped_column(Integer)
     network: Mapped[bool] = mapped_column(Boolean, default=False)
     # queued -> preparing -> running ->
-    #   succeeded | failed | timeout | stopped | out_of_credits | killed_by_admin | error
+    #   succeeded | failed | timeout | stopped | out_of_credits | killed_by_admin | lost | error
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    # where it ran: "local" or a compute node name; container_id holds the local container id
+    # or the node's job id
+    node: Mapped[str | None] = mapped_column(String(64), nullable=True)
     container_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -111,7 +114,7 @@ class LedgerEntry(Base):
 
 
 TERMINAL_STATUSES = {"succeeded", "failed", "timeout", "stopped", "error", "out_of_credits",
-                     "killed_by_admin"}
+                     "killed_by_admin", "lost"}
 ACTIVE_STATUSES = {"queued", "preparing", "running"}
 
 

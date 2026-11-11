@@ -26,10 +26,10 @@ bearer = HTTPBearer(auto_error=False)
 
 # ---------- app factory ----------
 def create_app(settings: Settings | None = None, runner: JobRunner | None = None,
-               recover: bool = True, enable_mcp: bool = True) -> FastAPI:
+               recover: bool = True, enable_mcp: bool = True, pool=None) -> FastAPI:
     settings = settings or load_settings()
     Session_ = make_session_factory(settings.db_url)
-    runner = runner or JobRunner(settings, Session_)
+    runner = runner or JobRunner(settings, Session_, pool=pool)
     svc = Services(settings, Session_, runner)
     with Session_() as db:
         grant_missing_initial(db, settings.default_credit_hours)

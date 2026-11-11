@@ -75,6 +75,7 @@ class JobOut(BaseModel):
     mem_mb: int
     timeout_seconds: int
     network: bool
+    node: str | None = None
     status: str
     exit_code: int | None
     error: str | None
@@ -101,6 +102,7 @@ class AdminJobOut(BaseModel):
     mem_mb: int
     timeout_seconds: int
     network: bool
+    node: str | None = None
     status: str
     exit_code: int | None
     created_at: datetime

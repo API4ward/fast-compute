@@ -122,6 +122,42 @@ The unit runs as `ubuntu` with the `docker` group, on 127.0.0.1:8800,
 `Restart=on-failure`, `MemoryHigh=200M` / `MemoryMax=350M`.
 Logs: `journalctl -u dockerserver -f`.
 
+## Compute nodes (remote execution)
+
+aws-london is the front door (API, MCP, web, billing); jobs can run on **compute nodes** — machines
+running the `computenode` agent (its own repo), reachable over the tailnet only and
+authenticated with a per-node Bearer token. The node enforces all container isolation itself.
+
+Configure in `/etc/dockerserver.env` (read by the systemd unit, and by `load_settings()` for any
+start method; mode 640 root:ubuntu). **Tokens go only there, never in git:**
+
+```sh
+DOCKERSERVER_NODES='[{"name":"mini","url":"http://100.126.20.127:8900","token_env":"DOCKERSERVER_NODE_TOKEN_MINI"}]'
+DOCKERSERVER_NODE_TOKEN_MINI=<the node's COMPUTENODE_TOKEN>
+```
+
+Then restart (`sudo systemctl restart dockerserver`) and check the node from this host:
+`sh deploy/check-node.sh` (prints `/v1/info`; never prints the token).
+
+Behaviour:
+
+- **Mode:** with at least one node that has a token, jobs run only on nodes;
+  `DOCKERSERVER_LOCAL_EXECUTION=true` adds this host's Docker as a last-resort fallback. With no
+  usable node, jobs run locally (the original behaviour). A node whose token variable is unset is
+  skipped with a warning.
+- **Scheduling:** the node with the most free CPUs (then memory) that fits the job is tried first
+  (`/v1/info`, cached `NODE_INFO_TTL`=5 s); a 409 moves on to the next node. If nothing fits now the
+  job stays `queued` and is retried every `QUEUE_RETRY`=5 s for up to `QUEUE_TIMEOUT`=1 h. A job
+  larger than every node is rejected at submit (HTTP 400). The job records which `node` ran it.
+- **Monitoring / billing:** the node's job status supplies exit code, OOM and CPU/memory
+  stats; billing uses the node-measured run time. Credit exhaustion, `stop_job` and
+  `suspend_user` kill via `POST /v1/jobs/{id}/kill`; logs come from the node; after final billing
+  the job is removed with `DELETE`. If a node can't be reached for `NODE_LOST_GRACE`=120 s the job
+  becomes `lost` and is billed up to when the node was last seen.
+- **Default limits for new users** are configurable: `DOCKERSERVER_DEFAULT_MAX_CPUS`,
+  `_MAX_MEM_MB`, `_MAX_RUN_SECONDS`, `_MAX_CONCURRENT_JOBS` (existing users keep theirs; change
+  them per user on the admin page / `set_user_limits`).
+
 ## Public access (HTTPS via Caddy)
 
 aws-london has a public IP, so no tunnel is needed. DockerServer stays bound to
@@ -251,7 +287,7 @@ users. Workspace volumes have no disk quota (only the upload is capped).
 
 ## Job statuses
 
-`queued → preparing → running → succeeded | failed | timeout | stopped | out_of_credits | killed_by_admin | error`.
+`queued → preparing → running → succeeded | failed | timeout | stopped | out_of_credits | killed_by_admin | lost | error`.
 On restart, the server marks jobs that were still active as `error` and removes leftover job containers/volumes.
 
 ## Credits
@@ -292,13 +328,15 @@ dockerserver/
   billing.py    credit math, ledger, idempotent job billing
   auth.py       token issue / hash / lookup
   workspace.py  upload/git → sanitized tar for /workspace
-  runner.py     Docker job runner (limits, isolation, timeout, logs)
+  runner.py     job orchestration: schedule, monitor, credits, finish, bill
+  backends.py   execution backends: local Docker, remote compute node (HTTP)
+  scheduler.py  node selection (most free capacity, 409 fallthrough, queueing)
   schemas.py    pydantic request/response models
   services.py   business logic shared by REST and MCP (permissions, limits, credits)
   api.py        FastAPI app (admin + jobs) + mounts /mcp
   mcp_server.py the two MCP services (/mcp user, /mcp-admin admin), bearer auth
   static/       admin.html (/admin-ui), user.html (/ui), common.js/css
-deploy/         systemd unit, env example, install script
+deploy/         systemd unit, env example, install scripts, check-node.sh
   main.py       ASGI entry point
   cli.py        create-admin / issue-token / list-users
 tests/          pytest (API, billing, MCP-over-HTTP, web pages, real Docker tests)
