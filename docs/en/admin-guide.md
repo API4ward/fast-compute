@@ -43,6 +43,10 @@ claude mcp add --transport http dockerserver-admin https://compute.llmfreedomfor
   --header "Authorization: Bearer ds_ADMIN_TOKEN"
 ```
 
+As a claude.ai / Claude Desktop custom connector: URL `https://compute.llmfreedomforge.com/mcp-admin`;
+on the approval page paste an **admin** token (a user token is refused). The connector's OAuth token
+works only on `/mcp-admin`.
+
 | Tool | Purpose |
 |---|---|
 | `list_users` | all users with role, limits, active, balance |

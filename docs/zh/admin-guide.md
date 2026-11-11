@@ -42,6 +42,9 @@ claude mcp add --transport http dockerserver-admin https://compute.llmfreedomfor
   --header "Authorization: Bearer ds_管理员令牌"
 ```
 
+作为 claude.ai / Claude Desktop 自定义连接器：URL 填 `https://compute.llmfreedomforge.com/mcp-admin`，
+在授权页面粘贴**管理员**令牌（普通用户令牌会被拒绝）。该连接器拿到的 OAuth 令牌只能用于 `/mcp-admin`。
+
 | 工具 | 用途 |
 |---|---|
 | `list_users` | 所有用户的角色、限额、启用状态、余额 |

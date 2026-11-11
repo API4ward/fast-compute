@@ -22,7 +22,6 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from .auth import lookup_user
 from .models import TERMINAL_STATUSES, Job
 from .schemas import JobOut, TokenOut, UserOut, ledger_out
 from .services import ServiceError, Services
@@ -59,8 +58,8 @@ class _BearerAuth:
     """ASGI wrapper: 401 unless the request carries a valid, active token (403 if the
     service needs an admin and the token isn't one); 429 when rate-limited."""
 
-    def __init__(self, app, svc: Services, require_admin: bool):
-        self.app, self.svc, self.require_admin = app, svc, require_admin
+    def __init__(self, app, svc: Services, require_admin: bool, path: str):
+        self.app, self.svc, self.require_admin, self.path = app, svc, require_admin, path
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
@@ -69,14 +68,17 @@ class _BearerAuth:
             err = None
             with self.svc.Session() as db:
                 try:
-                    user = self.svc.authenticate(db, _bearer(headers), client)
+                    user = self.svc.authenticate(db, _bearer(headers), client, self.path)
                     if self.require_admin and not user.is_admin:
                         err = ServiceError(403, "this MCP service is for admins only; use /mcp")
                 except ServiceError as e:
                     err = e
             if err is not None:
                 body = json.dumps({"detail": err.message}).encode()
-                extra = {401: [(b"www-authenticate", b"Bearer")], 429: [(b"retry-after", b"60")]}
+                www = "Bearer"
+                if self.svc.oauth is not None:   # RFC 9728: point OAuth clients at the metadata
+                    www += f' resource_metadata="{self.svc.settings.public_url}/.well-known/oauth-protected-resource{self.path}"'
+                extra = {401: [(b"www-authenticate", www.encode())], 429: [(b"retry-after", b"60")]}
                 await send({"type": "http.response.start", "status": err.status,
                             "headers": [(b"content-type", b"application/json")] + extra.get(err.status, [])})
                 await send({"type": "http.response.body", "body": body})
@@ -88,12 +90,12 @@ def _jsonable(obj):
     return json.loads(json.dumps(obj, default=lambda o: o.isoformat() if isinstance(o, datetime) else str(o)))
 
 
-def _caller(svc: Services, admin: bool):
+def _caller(svc: Services, admin: bool, path: str):
     def call(ctx: Context, fn):
         """Resolve the caller from the request headers, open a session, run fn(db, user)."""
         token = _bearer(ctx.headers)
         with svc.Session() as db:
-            user = lookup_user(db, token) if token else None
+            user = svc.resolve_user(db, token, path)   # already checked (and rate-limited) by _BearerAuth
             if user is None:
                 raise ToolError("unauthorized: missing, invalid or revoked token")
             if admin and not user.is_admin:
@@ -115,14 +117,14 @@ def _asgi(mcp: MCPServer, svc: Services, path: str, require_admin: bool):
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
             allowed_hosts=st.allowed_hosts, allowed_origins=st.allowed_origins))
-    return _BearerAuth(app, svc, require_admin)
+    return _BearerAuth(app, svc, require_admin, path)
 
 
 # ====================================================================================
 def build_user_mcp(svc: Services, path: str = "/mcp"):
     """Returns (mcp_server, asgi_app). Caller runs mcp.session_manager.run() in its lifespan."""
     mcp = MCPServer(name="dockerserver", instructions=USER_INSTRUCTIONS)
-    call = _caller(svc, admin=False)
+    call = _caller(svc, admin=False, path=path)
 
     def job_dict(job) -> dict[str, Any]:
         return JobOut.model_validate(job).model_dump(mode="json")
@@ -239,7 +241,7 @@ def build_user_mcp(svc: Services, path: str = "/mcp"):
 def build_admin_mcp(svc: Services, path: str = "/mcp-admin"):
     """Returns (mcp_server, asgi_app). Admin tokens only."""
     mcp = MCPServer(name="dockerserver-admin", instructions=ADMIN_INSTRUCTIONS)
-    call = _caller(svc, admin=True)
+    call = _caller(svc, admin=True, path=path)
 
     def user_dict(u) -> dict[str, Any]:
         return UserOut.model_validate(u).model_dump(mode="json")

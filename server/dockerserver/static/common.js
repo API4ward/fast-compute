@@ -102,12 +102,13 @@ function setupTabs(onShow) {
 }
 
 function jobsTable(jobs, { showUser = false, userNames = {}, onSelect } = {}) {
-  const headers = ["ID"].concat(showUser ? ["User"] : []).concat(["Status", "Command", "CPU", "MB",
+  const headers = ["ID"].concat(showUser ? ["User"] : []).concat(["Status", "Image", "Command", "CPU", "MB",
     "Started", { label: "Run", num: true }, { label: "Cost h", num: true }, { label: "CPU% avg/peak", num: true }, { label: "Mem MB peak", num: true }]);
   const rows = jobs.map(j => el("tr", { class: "clickable", onclick: () => onSelect && onSelect(j) },
     td(j.id),
     showUser ? td(userNames[j.user_id] || j.user_id) : null,
     td(statusBadge(j.status)),
+    td(j.image),
     td(j.command.length > 60 ? j.command.slice(0, 60) + "…" : j.command, "wrap"),
     td(j.cpus), td(j.mem_mb),
     td(fmtTime(j.started_at)),

@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import AuthFailureLimiter, issue_token, lookup_user
+from .oauth import revoke_for_ds_token, revoke_for_user
 from .billing import (accrued_uh, add_entry, available_uh, cost_uh, grant_initial, hours,
                       to_uh)
 from .config import Settings
@@ -36,12 +37,16 @@ class Services:
             from cryptography.fernet import Fernet
             key = Fernet.generate_key().decode()
         self.env = EnvStore(key)
+        self.oauth = None  # DSOAuthProvider when OAuth is enabled (set by create_app)
 
-    def authenticate(self, db: Session, token: str | None, client_ip: str) -> User:
-        """Resolve a bearer token to an active user; rate-limits repeated failures per IP."""
+    def authenticate(self, db: Session, token: str | None, client_ip: str,
+                     resource_path: str | None = None) -> User:
+        """Resolve a bearer token to an active user; rate-limits repeated failures per IP.
+        ds_ tokens work everywhere; OAuth access tokens (dsa_) only on the MCP endpoint
+        (resource_path) they were issued for."""
         if self.auth_limiter.blocked(client_ip):
             raise ServiceError(429, "too many failed authentication attempts; try again later")
-        user = lookup_user(db, token) if token else None
+        user = self.resolve_user(db, token, resource_path)
         if user is None:
             if token:
                 self.auth_limiter.record_failure(client_ip)
@@ -49,6 +54,16 @@ class Services:
         return user
 
     # ----- helpers -----
+    def resolve_user(self, db: Session, token: str | None, resource_path: str | None = None) -> User | None:
+        """Token -> active user, without rate limiting (see authenticate)."""
+        if not token:
+            return None
+        if token.startswith("dsa_"):
+            if self.oauth is None or not resource_path:
+                return None
+            return self.oauth.user_for_access_token(db, token, resource_path)
+        return lookup_user(db, token)
+
     @staticmethod
     def require_admin(user: User):
         if not user.is_admin:
@@ -99,6 +114,8 @@ class Services:
             raise ServiceError(400, "admins cannot disable or demote themselves")
         for k, v in changes.items():
             setattr(u, k, v)
+        if changes.get("active") is False:
+            revoke_for_user(db, u.id)
         db.commit()
         return u
 
@@ -110,6 +127,7 @@ class Services:
         if u.id == admin.id:
             raise ServiceError(400, "admins cannot suspend themselves")
         u.active = False
+        revoke_for_user(db, u.id)
         db.commit()
         active = db.scalars(select(Job.id).where(Job.user_id == u.id,
                                                  Job.status.in_(ACTIVE_STATUSES))).all()
@@ -148,6 +166,7 @@ class Services:
             raise ServiceError(404, "token not found")
         if tok.revoked_at is None:
             tok.revoked_at = utcnow()
+            revoke_for_ds_token(db, tok.id)
             db.commit()
         return tok
 

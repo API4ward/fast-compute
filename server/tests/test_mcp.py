@@ -127,6 +127,11 @@ def test_submit_job_with_wait(server):
             "cpus": 0.5, "mem_mb": 64, "wait": 60})).structured_content
     out = mcp_call(server["base"], server["user"], run)
     assert out["job"]["status"] == "succeeded", out
+    assert out["job"]["image"] == "python:3.12-slim"
+
+    async def listed(s):
+        return (await s.call_tool("list_jobs", {})).structured_content["result"]
+    assert mcp_call(server["base"], server["user"], listed)[0]["image"] == "python:3.12-slim"
     assert "hello mcp" in out["logs_tail"]
     assert out["job"]["cost_hours"] is not None
 
