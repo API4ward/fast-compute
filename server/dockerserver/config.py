@@ -125,6 +125,17 @@ class Settings:
     default_max_run_seconds: int = field(default_factory=lambda: int(_env("DEFAULT_MAX_RUN_SECONDS", "600")))
     default_max_concurrent_jobs: int = field(default_factory=lambda: int(_env("DEFAULT_MAX_CONCURRENT_JOBS", "2")))
 
+    # ---- OAuth for MCP connectors (claude.ai / Claude Desktop custom connectors) ----
+    # Public base URL of this service (OAuth issuer and resource URLs are built from it).
+    public_url: str = field(default_factory=lambda: _env("PUBLIC_URL", "https://compute.llmfreedomforge.com").rstrip("/"))
+    oauth_enabled: bool = field(default_factory=lambda: _bool("OAUTH", True))
+    # Redirect URIs a registering client may use: https on these hosts (and their subdomains),
+    # plus http://localhost / http://127.0.0.1 for local apps.
+    oauth_redirect_hosts: list[str] = field(default_factory=lambda: [
+        h.strip() for h in _env("OAUTH_REDIRECT_HOSTS", "claude.ai,claude.com").split(",") if h.strip()])
+    oauth_access_ttl: int = field(default_factory=lambda: int(_env("OAUTH_ACCESS_TTL", "3600")))
+    oauth_refresh_ttl: int = field(default_factory=lambda: int(_env("OAUTH_REFRESH_TTL", str(30 * 86400))))
+
     @property
     def use_local(self) -> bool:
         return self.local_execution if self.local_execution is not None else not self.nodes

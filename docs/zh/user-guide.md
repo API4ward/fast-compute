@@ -99,6 +99,12 @@ claude mcp add --transport http dockerserver https://compute.llmfreedomforge.com
 
 之后直接说，例如：*"用 2 个 CPU 在 dockerserver 上运行这个脚本，把输出给我看。"*
 
+**claude.ai / Claude Desktop 自定义连接器（不需要 Node.js）：** 设置 → Connectors（连接器）→
+*Add custom connector* → URL 填 `https://compute.llmfreedomforge.com/mcp`（OAuth 客户端 ID/密钥留空）
+→ *Connect*。会打开一个 fast-compute 页面：粘贴你的 `ds_…` 令牌，点 **Approve**。应用拿到的是
+它自己的令牌（有效期 1 小时，自动续期），不会拿到你的 `ds_` 令牌。吊销你的 `ds_` 令牌或账号被
+禁用后，连接器随即失效。
+
 ### 7 个工具（`/mcp`）——只作用于你自己的任务
 
 | 工具 | 参数 | 返回 |

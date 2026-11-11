@@ -113,6 +113,55 @@ class LedgerEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
+# ---------------- OAuth (MCP connectors in claude.ai / Claude Desktop) ----------------
+class OAuthClient(Base):
+    """Dynamically registered OAuth client (RFC 7591)."""
+    __tablename__ = "oauth_clients"
+    client_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    info_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class OAuthPending(Base):
+    """An /authorize request waiting for the user to approve it on the consent page."""
+    __tablename__ = "oauth_pending"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)   # sha256 of the request id
+    client_id: Mapped[str] = mapped_column(String(64))
+    params_json: Mapped[str] = mapped_column(Text)
+    csrf: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[float] = mapped_column(Float)
+
+
+class OAuthCode(Base):
+    """Authorization code (single use, short-lived); stored hashed."""
+    __tablename__ = "oauth_codes"
+    code_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    client_id: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    ds_token_id: Mapped[int] = mapped_column(ForeignKey("tokens.id"))
+    params_json: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[float] = mapped_column(Float)
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class OAuthToken(Base):
+    """OAuth access / refresh token, stored hashed, bound to a user, the ds_ token the user
+    approved with, one client and one resource (/mcp or /mcp-admin)."""
+    __tablename__ = "oauth_tokens"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(8))          # "access" | "refresh"
+    family: Mapped[str] = mapped_column(String(32), index=True)   # one approval = one family
+    client_id: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    ds_token_id: Mapped[int] = mapped_column(ForeignKey("tokens.id"), index=True)
+    resource: Mapped[str] = mapped_column(String(512))
+    scopes: Mapped[str] = mapped_column(String(256), default="")
+    expires_at: Mapped[float] = mapped_column(Float)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 TERMINAL_STATUSES = {"succeeded", "failed", "timeout", "stopped", "error", "out_of_credits",
                      "killed_by_admin", "lost"}
 ACTIVE_STATUSES = {"queued", "preparing", "running"}
