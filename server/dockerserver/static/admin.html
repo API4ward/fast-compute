@@ -89,10 +89,10 @@ let userNames = {};
 
 function adminJobsTable(jobs) {
   if (!jobs.length) return el("p", { class: "muted" }, "No jobs.");
-  return table(["ID", "User", "Status", "Node", "CPU", "MB", "Started", { label: "Run", num: true },
+  return table(["ID", "User", "Status", "Image", "Node", "CPU", "MB", "Started", { label: "Run", num: true },
     { label: "Cost h", num: true }, { label: "CPU% avg/peak", num: true }, { label: "Mem MB peak", num: true }],
     jobs.map(j => el("tr", {}, td(j.id), td(userNames[j.user_id] || j.user_id), td(statusBadge(j.status)),
-      td(j.node || "–"), td(j.cpus), td(j.mem_mb), td(fmtTime(j.started_at)), td(fmtDur(j.duration_seconds), "num"),
+      td(j.image), td(j.node || "–"), td(j.cpus), td(j.mem_mb), td(fmtTime(j.started_at)), td(fmtDur(j.duration_seconds), "num"),
       td(fmtH(j.cost_hours), "num"),
       td(j.cpu_avg_pct == null ? "–" : `${j.cpu_avg_pct.toFixed(0)} / ${j.cpu_peak_pct.toFixed(0)}`, "num"),
       td(j.mem_peak_mb == null ? "–" : j.mem_peak_mb.toFixed(0), "num"))));

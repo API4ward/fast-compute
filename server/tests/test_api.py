@@ -88,6 +88,8 @@ def test_job_limits_and_visibility(tmp_path):
         assert r.status_code == 201, r.text
         job = r.json()
         assert job["cpus"] == 1 and job["mem_mb"] == 256 and job["image"] == "python:3.12-slim"
+        assert c.get(f"/jobs/{job['id']}", headers=h).json()["image"] == "python:3.12-slim"
+        assert all(j["image"] == "python:3.12-slim" for j in c.get("/jobs", headers=h).json())
         assert stub.submitted[-1][1:] == ("main.py", b"print(1)")
         # b can't see a's job; admin can
         hb = auth(b["token"])
@@ -103,6 +105,7 @@ def test_job_limits_and_visibility(tmp_path):
         # ...they only get read-only metadata (no command/code)
         meta = c.get("/admin/jobs", headers=auth(atok)).json()
         assert len(meta) == 1 and "command" not in meta[0] and "git_url" not in meta[0]
+        assert meta[0]["image"] == "python:3.12-slim"          # image is metadata, not code
         assert c.get(f"/admin/jobs?user_id={a['id']}", headers=auth(atok)).json()[0]["id"] == job["id"]
         assert c.get("/admin/jobs", headers=hb).status_code == 403
         # concurrency limit (default 2 active jobs)
