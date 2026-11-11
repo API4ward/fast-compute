@@ -1,13 +1,13 @@
 """Node settings: environment variables COMPUTENODE_*, optionally loaded from a
-config file (default ~/.computenode/config.env, written by `computenode init`)."""
+config file (default config.env in the project directory, written by `computenode init`)."""
 import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_HOME = Path(os.environ.get("COMPUTENODE_HOME", Path.home() / ".computenode"))
-DEFAULT_CONFIG = DEFAULT_HOME / "config.env"
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_CONFIG = PROJECT_DIR / "config.env"
 
 
 def load_env_file(path: Path) -> None:

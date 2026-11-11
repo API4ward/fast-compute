@@ -5,7 +5,7 @@ the bridge (aws-london, 100.82.2.33) forwards to it, each in an isolated Docker 
 
 ## Start
 
-    ./start.sh            # creates .venv and ~/.computenode/config.env (with a fresh token) on first run
+    ./start.sh            # creates .venv and config.env (with a fresh token, mode 600, git-ignored) on first run
 
 Docker comes from Docker Desktop running under `gentle`; `coding` reaches it through
 `unix:///Users/gentle/.docker/run/docker.sock` (ACL granted by gentle; docker context `gentle`).
@@ -30,4 +30,4 @@ Image allow-list; user nobody; read-only root fs; cap_drop ALL; no-new-privilege
 memory limits (no swap); noexec /tmp tmpfs; workspace is a per-job Docker volume, never a host
 path; no Docker socket; network `none` unless COMPUTENODE_ALLOW_NETWORK=true; local wall-clock timeout.
 
-Config lives in `~/.computenode/config.env` (see `computenode/config.py` for all keys).
+Config lives in `config.env` in this directory (see `computenode/config.py` for all keys).

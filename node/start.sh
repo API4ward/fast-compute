@@ -7,7 +7,7 @@ if [ ! -x "$PY" ]; then
   python3 -m venv .venv
   .venv/bin/pip -q install -r requirements.txt
 fi
-[ -f "$HOME/.computenode/config.env" ] || $PY -m computenode init
+[ -f config.env ] || $PY -m computenode init
 
 # Docker Desktop runs under the desktop user (gentle); use its socket unless DOCKER_HOST is set.
 export DOCKER_HOST="${DOCKER_HOST:-unix:///Users/gentle/.docker/run/docker.sock}"

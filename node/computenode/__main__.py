@@ -32,7 +32,6 @@ def main(argv=None):
     if a.cmd == "init":
         if DEFAULT_CONFIG.exists() and not a.force:
             sys.exit(f"{DEFAULT_CONFIG} already exists (use --force to overwrite)")
-        DEFAULT_CONFIG.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         DEFAULT_CONFIG.write_text(TEMPLATE.format(token=secrets.token_urlsafe(32)))
         DEFAULT_CONFIG.chmod(0o600)
         print(f"wrote {DEFAULT_CONFIG}")
