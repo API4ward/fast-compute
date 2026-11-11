@@ -107,20 +107,30 @@ Sign in by pasting a token (kept in the tab's `sessionStorage`, gone when the ta
   usage report by date range (per-user CPU-hours, GB-hours, cost).
 - **`/ui`** (any token): my balance, limits, jobs (with logs), usage per day.
 
-## Run as a systemd service
+## Configuration file
 
-Unit and env file are in `deploy/`. Install (needs sudo):
+All configuration lives **in the project**, in `/home/ubuntu/projects/dockerserver/.env`
+(git-ignored, owned by ubuntu, mode 600). The app reads it itself at startup
+(`DOCKERSERVER_ENV_FILE` overrides the path) and its values override inherited environment
+variables; the startup log prints `config file: ... (loaded)`. Every setting is documented in the
+committed template `.env.example`:
 
 ```bash
-sudo sh deploy/install-service.sh
+cp .env.example .env && chmod 600 .env    # first time only; then edit .env
+sudo systemctl restart dockerserver       # apply changes
 ```
 
-It copies `deploy/dockerserver.service` to `/etc/systemd/system/`, creates
-`/etc/dockerserver.env` from `deploy/dockerserver.env.example` (if missing), stops a manually
-started instance, then `systemctl enable --now dockerserver` and restarts it once as a check.
-The unit runs as `ubuntu` with the `docker` group, on 127.0.0.1:8800,
-`Restart=on-failure`, `MemoryHigh=200M` / `MemoryMax=350M`.
-Logs: `journalctl -u dockerserver -f`.
+## Run as a systemd service
+
+Install (needs sudo): `sudo sh deploy/install-service.sh`
+
+Only the unit file is copied to `/etc/systemd/system/` (systemd requires units there); it has no
+`EnvironmentFile` — configuration stays in the project's `.env`, which the script creates from
+`.env.example` if missing. The script stops a manually started instance, then
+`systemctl enable --now dockerserver` and restarts it once as a check. The unit runs as `ubuntu`
+with the `docker` group, on 127.0.0.1:8800, `Restart=on-failure`, `MemoryHigh=200M` /
+`MemoryMax=350M`. Logs: `journalctl -u dockerserver -f`. (A leftover `/etc/dockerserver.env` from
+an earlier version is no longer used and can be deleted.)
 
 ## Compute nodes (remote execution)
 
@@ -128,15 +138,14 @@ aws-london is the front door (API, MCP, web, billing); jobs can run on **compute
 running the `computenode` agent (its own repo), reachable over the tailnet only and
 authenticated with a per-node Bearer token. The node enforces all container isolation itself.
 
-Configure in `/etc/dockerserver.env` (read by the systemd unit, and by `load_settings()` for any
-start method; mode 640 root:ubuntu). **Tokens go only there, never in git:**
+Configure in the project's `.env` (see "Configuration file"). **Tokens go only there, never in git:**
 
 ```sh
 DOCKERSERVER_NODES='[{"name":"mini","url":"http://100.126.20.127:8900","token_env":"DOCKERSERVER_NODE_TOKEN_MINI"}]'
 DOCKERSERVER_NODE_TOKEN_MINI=<the node's COMPUTENODE_TOKEN>
 ```
 
-Then restart (`sudo systemctl restart dockerserver`) and check the node from this host:
+Then check the node from this host and restart (`sudo systemctl restart dockerserver`):
 `sh deploy/check-node.sh` (prints `/v1/info`; never prints the token).
 
 Behaviour:
@@ -169,18 +178,18 @@ Let's Encrypt certificate) and reverse-proxies to it.
    instance's IP may change.
 2. **AWS security group:** inbound TCP **80** and **443** from anywhere (80 is needed for the
    certificate challenge and the HTTP→HTTPS redirect). Port **8800 must NOT be open**.
-3. **Install Caddy** (official apt repo) and write `/etc/caddy/Caddyfile`:
-   `sudo sh deploy/install-caddy.sh` (other domain: `sudo DOCKERSERVER_DOMAIN=example.com sh deploy/install-caddy.sh`,
-   and add it to `DOCKERSERVER_ALLOWED_HOSTS`). The site block reverse-proxies to 127.0.0.1:8800,
-   keeps the Host header, sets HSTS / nosniff / no-referrer, caps request bodies at 60 MB and allows
-   120 s responses (MCP `wait`).
+3. **Install Caddy** (official apt repo): `sudo sh deploy/install-caddy.sh`. The site config lives
+   in the project, **`deploy/Caddyfile`**; `/etc/caddy/Caddyfile` only contains
+   `import /home/ubuntu/projects/dockerserver/deploy/Caddyfile` (the script also adds the `caddy`
+   user to the `ubuntu` group so it can read it; `.env` stays 600). Edit `deploy/Caddyfile` and run
+   `sudo systemctl reload caddy`. It reverse-proxies to 127.0.0.1:8800, keeps the Host header,
+   sets HSTS / nosniff / no-referrer, caps request bodies at 60 MB and allows 120 s responses.
 4. **Check:** `curl -sI https://compute.llmfreedomforge.com/health`; logs: `journalctl -u caddy -f`.
 
-**Behind Cloudflare's proxy (orange cloud):** the domain currently resolves to Cloudflare, which
-forwards to Caddy. `install-caddy.sh` (default `BEHIND_CLOUDFLARE=1`) then trusts Cloudflare's
-published IP ranges and takes the visitor's address from `CF-Connecting-IP`, passing exactly that
-IP to the app — otherwise all visitors would appear as a few Cloudflare IPs and the per-IP
-auth-failure limit would lump them together. Re-run the script after changing this.
+**Behind Cloudflare's proxy (orange cloud):** the domain resolves to Cloudflare, which forwards to
+Caddy. `deploy/Caddyfile` trusts Cloudflare's published IP ranges and takes the visitor's address
+from `CF-Connecting-IP`, passing exactly that IP to the app — otherwise all visitors would appear
+as a few Cloudflare IPs and the per-IP auth-failure limit would lump them together.
 
 The app is proxy-aware: uvicorn runs with `--proxy-headers --forwarded-allow-ips=127.0.0.1`, so the
 client IP from Caddy's `X-Forwarded-For` is used for the auth-failure rate limit, and `/mcp`'s
@@ -342,7 +351,8 @@ dockerserver/
   api.py        FastAPI app (admin + jobs) + mounts /mcp
   mcp_server.py the two MCP services (/mcp user, /mcp-admin admin), bearer auth
   static/       admin.html (/admin-ui), user.html (/ui), common.js/css
-deploy/         systemd unit, env example, install scripts, check-node.sh
+deploy/         systemd unit, Caddyfile, install scripts, check-node.sh
+.env.example    configuration template (copy to .env, git-ignored)
   main.py       ASGI entry point
   cli.py        create-admin / issue-token / list-users
 tests/          pytest (API, billing, MCP-over-HTTP, web pages, real Docker tests)

@@ -33,3 +33,20 @@ def test_default_allowed_hosts():
     s = Settings()
     assert "compute.llmfreedomforge.com" in s.allowed_hosts
     assert "https://compute.llmfreedomforge.com" in s.allowed_origins
+
+
+def test_project_env_file_is_loaded_and_wins(tmp_path, monkeypatch):
+    from dockerserver.config import DEFAULT_ENV_FILE, PROJECT_DIR, load_settings
+    assert DEFAULT_ENV_FILE == PROJECT_DIR / ".env"
+    env = tmp_path / ".env"
+    env.write_text(f"DOCKERSERVER_DATA_DIR={tmp_path}/d\nDOCKERSERVER_DEFAULT_MAX_CPUS=3\n"
+                   "DOCKERSERVER_NODES='[{\"name\":\"n1\",\"url\":\"http://x:1\",\"token_env\":\"N1_TOK\"}]'\n"
+                   "N1_TOK=\n")
+    monkeypatch.setenv("DOCKERSERVER_ENV_FILE", str(env))
+    monkeypatch.setenv("DOCKERSERVER_DEFAULT_MAX_CPUS", "9")   # inherited value; .env wins
+    # register every key the file sets so monkeypatch restores them after the test
+    for k in ("DOCKERSERVER_DATA_DIR", "DOCKERSERVER_NODES", "N1_TOK"):
+        monkeypatch.setenv(k, "placeholder")
+    s = load_settings()
+    assert s.default_max_cpus == 3 and str(s.data_dir) == f"{tmp_path}/d"
+    assert s.nodes == [] and s.use_local          # empty token -> node skipped -> local mode

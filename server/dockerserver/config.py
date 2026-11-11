@@ -1,8 +1,9 @@
 """Settings, read from environment variables (prefix DOCKERSERVER_).
 
-load_settings() first loads KEY=VALUE lines from DOCKERSERVER_ENV_FILE (default
-/etc/dockerserver.env, if readable); variables already set in the environment win.
-Secrets such as compute-node tokens live only there / in the environment, never in git.
+load_settings() first loads KEY=VALUE lines from the project's `.env` file
+(<repo>/.env, or DOCKERSERVER_ENV_FILE). That file is the source of truth: its values
+override inherited environment variables. It is git-ignored and should be mode 600;
+secrets such as compute-node tokens live only there, never in git.
 """
 import json
 import logging
@@ -17,7 +18,11 @@ def _env(name, default):
     return os.environ.get(f"DOCKERSERVER_{name}", default)
 
 
-def load_env_file(path: Path) -> None:
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_ENV_FILE = PROJECT_DIR / ".env"
+
+
+def load_env_file(path: Path, override: bool = False) -> None:
     try:
         text = path.read_text()
     except OSError:
@@ -30,7 +35,10 @@ def load_env_file(path: Path) -> None:
         v = v.strip()
         if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
             v = v[1:-1]
-        os.environ.setdefault(k.strip(), v)
+        if override:
+            os.environ[k.strip()] = v
+        else:
+            os.environ.setdefault(k.strip(), v)
 
 
 @dataclass
@@ -137,7 +145,9 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    load_env_file(Path(os.environ.get("DOCKERSERVER_ENV_FILE", "/etc/dockerserver.env")))
+    env_file = Path(os.environ.get("DOCKERSERVER_ENV_FILE", DEFAULT_ENV_FILE))
+    load_env_file(env_file, override=True)
+    log.warning("config file: %s (%s)", env_file, "loaded" if env_file.exists() else "not found")
     s = Settings()
     s.logs_dir.mkdir(parents=True, exist_ok=True)
     return s
