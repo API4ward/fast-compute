@@ -61,9 +61,10 @@ class NodeJob:
     stat_samples: int = 0
     container_id: str | None = None
     kill_reason: str | None = None
+    env: dict = field(default_factory=dict, repr=False)   # never returned by the API, never logged
 
     def public(self) -> dict:
-        d = {k: v for k, v in self.__dict__.items() if k not in ("container_id", "kill_reason")}
+        d = {k: v for k, v in self.__dict__.items() if k not in ("container_id", "kill_reason", "env")}
         return d
 
 
@@ -132,6 +133,8 @@ class NodeRunner:
             "free": {"cpus": round(self.cap_cpus - uc, 3), "mem_mb": self.cap_mem_mb - um},
             "active_jobs": running, "allowed_images": self.s.allowed_images,
             "allow_network": self.s.allow_network,
+            # capabilities the bridge checks before sending a job that needs them
+            "features": ["env"],
         }
 
     # ---------- jobs ----------
@@ -162,7 +165,8 @@ class NodeRunner:
         network = bool(spec.get("network", False))
         if network and not self.s.allow_network:
             raise Refused("network access is disabled on this node", 403)
-        job = NodeJob(jid, image, command, cpus, mem_mb, timeout, network)
+        env = check_env(spec.get("env"))
+        job = NodeJob(jid, image, command, cpus, mem_mb, timeout, network, env=env)
         with self._lock:
             if jid in self.jobs:
                 raise Refused("job id already exists", 409)
@@ -251,7 +255,7 @@ class NodeRunner:
             c = self.client.containers.create(
                 job.image, ["sh", "-c", job.command], name=cname, labels=labels,
                 user=s.container_user, working_dir="/workspace",
-                environment={"HOME": "/workspace", "PYTHONUNBUFFERED": "1"},
+                environment={**job.env, "HOME": "/workspace", "PYTHONUNBUFFERED": "1"},
                 mounts=[ws],
                 tmpfs={"/tmp": f"rw,noexec,nosuid,nodev,size={s.tmp_size}"},
                 read_only=True, privileged=False, cap_drop=["ALL"],
@@ -351,6 +355,34 @@ def clean_tar(payload: bytes) -> bytes:
     except tarfile.TarError as e:
         raise Refused(f"workspace is not a valid tar: {e}")
     return out.getvalue()
+
+
+# Environment variables from the bridge: validated again here (the node never trusts the bridge
+# for isolation). Same rules as the bridge: name syntax, reserved names, size limits.
+ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+ENV_RESERVED = {"PATH", "HOME", "HOSTNAME", "PWD", "PYTHONHOME", "PYTHONUNBUFFERED"}
+ENV_RESERVED_PREFIXES = ("LD_", "DOCKERSERVER_", "COMPUTENODE_")
+
+
+def check_env(env) -> dict:
+    if env is None:
+        return {}
+    if not isinstance(env, dict):
+        raise Refused("env must be an object")
+    if len(env) > 50:
+        raise Refused("too many environment variables")
+    total = 0
+    for k, v in env.items():
+        if not isinstance(k, str) or not ENV_NAME_RE.match(k):
+            raise Refused(f"invalid environment variable name: {str(k)[:64]!r}")
+        if k.upper() in ENV_RESERVED or k.upper().startswith(ENV_RESERVED_PREFIXES):
+            raise Refused(f"environment variable {k} is reserved")
+        if not isinstance(v, str) or len(v) > 4096 or "\x00" in v:
+            raise Refused(f"invalid value for environment variable {k}")
+        total += len(k) + len(v)
+    if total > 32 * 1024:
+        raise Refused("environment variables too large")
+    return dict(env)
 
 
 class _Killed(Exception):

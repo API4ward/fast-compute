@@ -2,7 +2,8 @@
 user, cpus, mem_mb, started_at, finished_at."""
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, inspect, text
+from sqlalchemy import (Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text,
+                        UniqueConstraint, create_engine, inspect, text)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 
@@ -41,6 +42,17 @@ class User(Base):
         return self.role == "admin"
 
 
+class UserEnv(Base):
+    """A user's environment variable, injected into all their jobs; value Fernet-encrypted."""
+    __tablename__ = "user_env"
+    __table_args__ = (UniqueConstraint("user_id", "name"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    value_enc: Mapped[bytes] = mapped_column(LargeBinary)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Token(Base):
     __tablename__ = "tokens"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -69,6 +81,8 @@ class Job(Base):
     # queued -> preparing -> running ->
     #   succeeded | failed | timeout | stopped | out_of_credits | killed_by_admin | lost | error
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    # names (never values) of the environment variables the job ran with, comma-separated
+    env_names: Mapped[str | None] = mapped_column(Text, nullable=True)
     # where it ran: "local" or a compute node name; container_id holds the local container id
     # or the node's job id
     node: Mapped[str | None] = mapped_column(String(64), nullable=True)

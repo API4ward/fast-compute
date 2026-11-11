@@ -18,6 +18,7 @@ from .billing import (accrued_uh, add_entry, available_uh, cost_uh, grant_initia
 from .config import Settings
 from .models import ACTIVE_STATUSES, TERMINAL_STATUSES, Job, LedgerEntry, Token, User, utcnow
 from .runner import JobRunner
+from .userenv import EnvError, EnvStore
 from .schemas import AdminJobOut, JobOut, UserOut, ledger_out, usage_totals
 
 
@@ -31,6 +32,11 @@ class Services:
     def __init__(self, settings: Settings, session_factory, runner: JobRunner):
         self.settings, self.Session, self.runner = settings, session_factory, runner
         self.auth_limiter = AuthFailureLimiter(settings.auth_fail_limit, settings.auth_fail_window)
+        key = settings.secret_key
+        if not key:   # e.g. tests constructing Settings directly; load_settings() always sets one
+            from cryptography.fernet import Fernet
+            key = Fernet.generate_key().decode()
+        self.env = EnvStore(key)
         self.oauth = None  # DSOAuthProvider when OAuth is enabled (set by create_app)
 
     def authenticate(self, db: Session, token: str | None, client_ip: str,
@@ -230,12 +236,26 @@ class Services:
                     include={"max_cpus", "max_mem_mb", "max_run_seconds",
                              "max_concurrent_jobs", "allow_network"})}
 
+    # ----- the caller's own environment variables -----
+    def list_env(self, db: Session, user: User, reveal: bool = False) -> list[dict]:
+        return self.env.listing(db, user.id, reveal)
+
+    def set_env(self, db: Session, user: User, name: str, value: str):
+        try:
+            self.env.set(db, user.id, name, value)
+        except EnvError as e:
+            raise ServiceError(400, str(e))
+
+    def delete_env(self, db: Session, user: User, name: str):
+        if not self.env.delete(db, user.id, name):
+            raise ServiceError(404, f"no variable {name}")
+
     # ----- jobs -----
     def submit_job(self, db: Session, user: User, *, command: str, image: str | None = None,
                    cpus: float | None = None, mem_mb: int | None = None,
                    timeout_seconds: int | None = None, network: bool = False,
                    git_url: str | None = None, filename: str | None = None,
-                   content: bytes | None = None) -> Job:
+                   content: bytes | None = None, env: dict | None = None) -> Job:
         s = self.settings
         if not command or not command.strip():
             raise ServiceError(400, "command is required")
@@ -259,7 +279,11 @@ class Services:
             raise ServiceError(400, "git_url must be an https:// URL")
         if content is not None and len(content) > s.max_upload_bytes:
             raise ServiceError(413, "upload too large")
-        never = getattr(self.runner, "never_fits", lambda c, m: None)(cpus, mem_mb)
+        try:
+            job_env = self.env.merged(db, user.id, env)   # user-global, overridden per job
+        except EnvError as e:
+            raise ServiceError(400, str(e))
+        never = getattr(self.runner, "never_fits", lambda c, m, e=False: None)(cpus, mem_mb, bool(job_env))
         if never:
             raise ServiceError(400, never)
         need = cost_uh(cpus, mem_mb, s.min_start_seconds)
@@ -271,10 +295,11 @@ class Services:
         if active >= user.max_concurrent_jobs:
             raise ServiceError(429, f"too many active jobs (limit {user.max_concurrent_jobs})")
         job = Job(user_id=user.id, image=image, command=command, git_url=git_url or None,
-                  cpus=cpus, mem_mb=mem_mb, timeout_seconds=timeout_seconds, network=network)
+                  cpus=cpus, mem_mb=mem_mb, timeout_seconds=timeout_seconds, network=network,
+                  env_names=",".join(sorted(job_env)) or None)
         db.add(job)
         db.commit()
-        self.runner.submit(job.id, filename, content)
+        self.runner.submit(job.id, filename, content, env=job_env)
         return job
 
     def files_to_tar(self, files: dict[str, str]) -> bytes:

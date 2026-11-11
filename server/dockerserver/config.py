@@ -70,6 +70,27 @@ def parse_nodes(raw: str | None) -> list[NodeConfig]:
     return nodes
 
 
+def ensure_secret_key(env_file: Path) -> None:
+    """Generate DOCKERSERVER_SECRET_KEY into the .env file on first start (mode stays 600).
+    Losing this key makes stored environment variables unreadable - back up .env."""
+    if os.environ.get("DOCKERSERVER_SECRET_KEY", "").strip():
+        return
+    from cryptography.fernet import Fernet
+    key = Fernet.generate_key().decode()
+    try:
+        existed = env_file.exists()
+        with open(env_file, "a") as f:
+            f.write("\n# Encrypts users' environment variables at rest. Keep it; back it up with .env.\n"
+                    f"DOCKERSERVER_SECRET_KEY={key}\n")
+        if not existed:
+            env_file.chmod(0o600)
+        log.warning("generated DOCKERSERVER_SECRET_KEY into %s", env_file)
+    except OSError as e:
+        log.warning("could not write DOCKERSERVER_SECRET_KEY to %s (%s); using a temporary key - "
+                    "stored environment variables will not survive a restart", env_file, e)
+    os.environ["DOCKERSERVER_SECRET_KEY"] = key
+
+
 def _bool(name, default: bool | None) -> bool | None:
     v = _env(name, None)
     if v is None or v.strip() == "":
@@ -125,6 +146,8 @@ class Settings:
     default_max_run_seconds: int = field(default_factory=lambda: int(_env("DEFAULT_MAX_RUN_SECONDS", "600")))
     default_max_concurrent_jobs: int = field(default_factory=lambda: int(_env("DEFAULT_MAX_CONCURRENT_JOBS", "2")))
 
+    # Fernet key encrypting users' environment variables at rest (generated into .env if missing).
+    secret_key: str = field(default_factory=lambda: _env("SECRET_KEY", ""), repr=False)
     # ---- OAuth for MCP connectors (claude.ai / Claude Desktop custom connectors) ----
     # Public base URL of this service (OAuth issuer and resource URLs are built from it).
     public_url: str = field(default_factory=lambda: _env("PUBLIC_URL", "https://compute.llmfreedomforge.com").rstrip("/"))
@@ -159,6 +182,7 @@ class Settings:
 def load_settings() -> Settings:
     env_file = Path(os.environ.get("DOCKERSERVER_ENV_FILE", DEFAULT_ENV_FILE))
     load_env_file(env_file, override=True)
+    ensure_secret_key(env_file)
     log.warning("config file: %s (%s)", env_file, "loaded" if env_file.exists() else "not found")
     s = Settings()
     if not s.nodes and not _env("NODES", "").strip() and any(

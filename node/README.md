@@ -15,8 +15,8 @@ Print the token with `.venv/bin/python -m computenode token`.
 
 | Method | Path | |
 |---|---|---|
-| GET | /v1/info | capacity / used / free cpus and mem_mb, active_jobs |
-| POST | /v1/jobs | multipart: `spec` JSON `{id,image,command,cpus,mem_mb,timeout_seconds,network}` + optional `workspace` tar; 201, 409 if full |
+| GET | /v1/info | capacity / used / free cpus and mem_mb, active_jobs, `features` (e.g. `["env"]`) |
+| POST | /v1/jobs | multipart: `spec` JSON `{id,image,command,cpus,mem_mb,timeout_seconds,network,env?}` + optional `workspace` tar; 201, 409 if full. `env` = `{NAME: value}`, validated here too (names, reserved names, sizes), set on the container, never returned or logged |
 | GET | /v1/jobs/{id} | status, exit_code, oom, cpu/mem avg/peak, started_at/finished_at |
 | GET | /v1/jobs/{id}/logs?tail=N | combined stdout/stderr |
 | POST | /v1/jobs/{id}/kill | |

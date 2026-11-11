@@ -1,5 +1,6 @@
 """FastAPI application: admin + job endpoints, bearer-token auth."""
 import hashlib
+import json
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +19,7 @@ from .config import Settings, load_settings
 from .billing import grant_missing_initial
 from .models import Token, User, make_session_factory
 from .runner import JobRunner
-from .schemas import (AdminJobOut, CreditChange, JobOut, LedgerOut, TokenCreate, TokenIssued, TokenOut,
+from .schemas import (AdminJobOut, CreditChange, EnvValue, JobOut, LedgerOut, TokenCreate, TokenIssued, TokenOut,
                       UserCreate, UserCreated, UserOut, UserUpdate, ledger_out)
 from .services import ServiceError, Services
 
@@ -154,6 +155,20 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
         """My jobs (with cost and usage stats) and per-day totals, by job start day (UTC)."""
         return svc.my_usage(db, user, start, end)
 
+    # ----- my environment variables (owner only; admins have no access) -----
+    @app.get("/me/env")
+    def my_env(db: DB, user: CurrentUser, reveal: bool = False):
+        """My variables; values masked unless reveal=true."""
+        return svc.list_env(db, user, reveal)
+
+    @app.put("/me/env/{name}", status_code=204)
+    def put_env(name: str, body: EnvValue, db: DB, user: CurrentUser):
+        svc.set_env(db, user, name, body.value)
+
+    @app.delete("/me/env/{name}", status_code=204)
+    def del_env(name: str, db: DB, user: CurrentUser):
+        svc.delete_env(db, user, name)
+
     # ----- admin -----
     @app.post("/admin/users", response_model=UserCreated, status_code=201)
     def create_user(body: UserCreate, db: DB, admin: Admin):
@@ -231,15 +246,22 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
         timeout_seconds: Annotated[int | None, Form(ge=1)] = None,
         network: Annotated[bool, Form()] = False,
         git_url: Annotated[str | None, Form(max_length=1024)] = None,
+        env: Annotated[str | None, Form(description="JSON object NAME: value; overrides your saved variables for this job")] = None,
         file: Annotated[UploadFile | None, File()] = None,
     ):
+        job_env = None
+        if env:
+            try:
+                job_env = json.loads(env)
+            except ValueError:
+                raise HTTPException(400, "env must be a JSON object")
         content = filename = None
         if file is not None and file.filename:
             content = await file.read(settings.max_upload_bytes + 1)
             filename = file.filename
         return svc.submit_job(db, user, command=command, image=image, cpus=cpus, mem_mb=mem_mb,
                               timeout_seconds=timeout_seconds, network=network, git_url=git_url,
-                              filename=filename, content=content)
+                              filename=filename, content=content, env=job_env)
 
     @app.get("/jobs", response_model=list[JobOut])
     def list_jobs(db: DB, user: CurrentUser, status: str | None = None, limit: int = 100):

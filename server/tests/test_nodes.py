@@ -29,6 +29,8 @@ class FakeNode:
         self.jobs: dict[str, dict] = {}
         self.up = True
         self.force_409 = False
+        self.features: list[str] = []          # e.g. ["env"] for an updated agent
+        self.specs: list[dict] = []
         self.calls: list[tuple[str, str]] = []
         self.lock = threading.Lock()
 
@@ -64,13 +66,14 @@ class FakeNode:
                     "node": self.name, "capacity": {"cpus": self.cap_cpus, "mem_mb": self.cap_mem},
                     "used": {"cpus": uc, "mem_mb": um},
                     "free": {"cpus": self.cap_cpus - uc, "mem_mb": self.cap_mem - um},
-                    "active_jobs": len(act)})
+                    "active_jobs": len(act), "features": self.features})
             if m == "POST" and path == "/v1/jobs":
                 msg = BytesParser(policy=email_default).parsebytes(
                     b"Content-Type: " + request.headers["content-type"].encode() + b"\r\n\r\n" + request.content)
                 parts = {p.get_param("name", header="content-disposition"): p.get_payload(decode=True)
                          for p in msg.iter_parts()}
                 spec = json.loads(parts["spec"])
+                self.specs.append(spec)
                 assert spec["image"] == "python:3.12-slim"
                 act = self._active()
                 if (self.force_409 or spec["cpus"] > self.cap_cpus

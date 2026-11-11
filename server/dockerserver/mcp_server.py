@@ -136,21 +136,22 @@ def build_user_mcp(svc: Services, path: str = "/mcp"):
         "`command` runs via `sh -c` in /workspace, e.g. 'python main.py'. Optional: image "
         "(default python:3.12-slim; only allow-listed images), cpus (default 1), mem_mb (default "
         "256), timeout_seconds (default = your max run time), network (only if your account "
-        "allows it). Requests above your limits are rejected. Set `wait` (0-60 s) to block until "
+        "allows it). `env` ({NAME: value}) adds environment variables for this job, overriding your "
+        "saved ones (see set_env). Requests above your limits are rejected. Set `wait` (0-60 s) to block until "
         "the job finishes and get its status and log tail back; otherwise poll get_job / "
         "get_job_logs. " + PRICING))
     def submit_job(ctx: Context, command: str, files: dict[str, str] | None = None,
                    git_url: str | None = None, image: str | None = None,
                    cpus: float | None = None, mem_mb: int | None = None,
                    timeout_seconds: int | None = None, network: bool = False,
-                   wait: int = 0) -> dict[str, Any]:
+                   env: dict[str, str] | None = None, wait: int = 0) -> dict[str, Any]:
         def run(db, user):
             filename = content = None
             if files:
                 content, filename = svc.files_to_tar(files), "inline.tar"
             job = svc.submit_job(db, user, command=command, image=image, cpus=cpus, mem_mb=mem_mb,
                                  timeout_seconds=timeout_seconds, network=network, git_url=git_url,
-                                 filename=filename, content=content)
+                                 filename=filename, content=content, env=env)
             return job.id
         job_id = call(ctx, run)
         w = max(0, min(int(wait or 0), 60))
@@ -209,6 +210,29 @@ def build_user_mcp(svc: Services, path: str = "/mcp"):
     def get_usage(ctx: Context, start: datetime | None = None, end: datetime | None = None,
                   include_jobs: bool = False) -> dict[str, Any]:
         return call(ctx, lambda db, u: _jsonable(svc.my_usage(db, u, start, end, include_jobs)))
+
+    @mcp.tool(description="List my saved environment variables (injected into every job I run). "
+                          "Values are masked unless reveal=true.", annotations=RO)
+    def list_env(ctx: Context, reveal: bool = False) -> list[dict[str, Any]]:
+        return call(ctx, lambda db, u: _jsonable(svc.list_env(db, u, reveal)))
+
+    @mcp.tool(description="Save (create or replace) one of my environment variables; it is injected "
+                          "into all my future jobs (a job's own `env` overrides it). Names: letters, "
+                          "digits, _; not PATH/HOME/HOSTNAME/PWD/PYTHONHOME/PYTHONUNBUFFERED/LD_*. "
+                          "Values up to 4096 chars, stored encrypted, never shown to admins.")
+    def set_env(ctx: Context, name: str, value: str) -> dict[str, Any]:
+        def run(db, u):
+            svc.set_env(db, u, name, value)
+            return {"name": name, "saved": True}
+        return call(ctx, run)
+
+    @mcp.tool(description="Delete one of my saved environment variables.",
+              annotations=ToolAnnotations(destructiveHint=True, openWorldHint=False))
+    def delete_env(ctx: Context, name: str) -> dict[str, Any]:
+        def run(db, u):
+            svc.delete_env(db, u, name)
+            return {"name": name, "deleted": True}
+        return call(ctx, run)
 
     return mcp, _asgi(mcp, svc, path, require_admin=False)
 

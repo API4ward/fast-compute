@@ -105,7 +105,7 @@ claude mcp add --transport http dockerserver https://compute.llmfreedomforge.com
 它自己的令牌（有效期 1 小时，自动续期），不会拿到你的 `ds_` 令牌。吊销你的 `ds_` 令牌或账号被
 禁用后，连接器随即失效。
 
-### 7 个工具（`/mcp`）——只作用于你自己的任务
+### 10 个工具（`/mcp`）——只作用于你自己的任务
 
 | 工具 | 参数 | 返回 |
 |---|---|---|
@@ -116,6 +116,9 @@ claude mcp add --transport http dockerserver https://compute.llmfreedomforge.com
 | `stop_job` | `job_id` | 已停止的任务（按已运行时间计费） |
 | `get_balance` | — | `balance_hours`、`available_hours`、你的限额 |
 | `get_usage` | `start`、`end`（ISO，UTC）、`include_jobs` | 总计和每日的 CPU 小时、GB 小时、费用 |
+| `list_env` | `reveal`（false） | 你保存的环境变量（默认遮盖值，`reveal` 时显示） |
+| `set_env` | `name`、`value` | 保存 / 替换一个变量（你的所有任务都会带上） |
+| `delete_env` | `name` | 删除一个变量 |
 
 `submit_job` 参数示例：
 
@@ -181,12 +184,35 @@ print(job["status"], job["exit_code"], job["cost_hours"])
 print(requests.get(f"{DS}/jobs/{job['id']}/logs", headers=H).text)
 ```
 
-## 4. 网页
+## 4. 环境变量
+
+把变量（API 密钥、配置等）保存一次，之后你运行的每个任务都会自动带上；单个任务的 `env` 会覆盖同名变量
+（只对该任务生效）。
+
+- **在哪里设置：** `/ui` 页面的 *Environment variables* 区域；MCP 工具 `list_env` / `set_env` /
+  `delete_env`；或 REST：`GET /me/env`（默认遮盖，`?reveal=true` 显示值）、
+  `PUT /me/env/{NAME}`（body `{"value": "..."}`）、`DELETE /me/env/{NAME}`。
+- **单个任务：** MCP 用 `submit_job(..., env={"NAME": "value"})`，REST 用表单字段
+  `env='{"NAME":"value"}'`（JSON）。
+- **规则：** 名称为 `[A-Za-z_][A-Za-z0-9_]*`（≤ 64 字符）；值 ≤ 4096 字符；最多 50 个变量，总计
+  ≤ 32 KiB。保留名称（会被拒绝）：`PATH`、`HOME`、`HOSTNAME`、`PWD`、`PYTHONHOME`、`PYTHONUNBUFFERED`，
+  以及以 `LD_` 或 `DOCKERSERVER_` 开头的名称。
+- **隐私：** 值加密存储，只有你自己能看到（管理员看不到），不会写进日志；单个任务的值完全不保存，
+  任务里只记录变量**名称**（`env_names`）。
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"value":"sk-..."}' $DS/me/env/OPENAI_API_KEY
+curl -s -H "Authorization: Bearer $TOKEN" --form-string command='python -c "import os; print(os.environ[\"MODE\"])"' \
+  -F env='{"MODE":"test"}' $DS/jobs
+```
+
+## 5. 网页
 
 https://compute.llmfreedomforge.com/ui ：粘贴令牌后可以看到余额、限额、你的任务（点开可看日志、
 停止任务）和每日用量。令牌只保存在当前浏览器标签页里。
 
-## 5. 常见问题
+## 6. 常见问题
 
 | 现象 | 原因 / 解决 |
 |---|---|
