@@ -52,6 +52,10 @@ sudo sh deploy/install-service.sh             # systemd 服务（只有 unit 文
 | `DOCKERSERVER_DEFAULT_MAX_CPUS` / `_MAX_MEM_MB` / `_MAX_RUN_SECONDS` / `_MAX_CONCURRENT_JOBS` | 1 / 256 / 600 / 2 | 新用户的限额 |
 | `DOCKERSERVER_ALLOWED_HOSTS` | `127.0.0.1:8800,localhost:8800,compute.llmfreedomforge.com` | `/mcp`、`/mcp-admin` 接受的 Host |
 | `DOCKERSERVER_AUTH_FAIL_LIMIT` / `_WINDOW` | 20 / 300 | 每个 IP 在窗口内的错误令牌次数，超过返回 429 |
+| `DOCKERSERVER_PUBLIC_URL` | `https://compute.llmfreedomforge.com` | OAuth issuer / 资源 URL |
+| `DOCKERSERVER_OAUTH` | `true` | 为 MCP 自定义连接器（claude.ai / Desktop）启用 OAuth |
+| `DOCKERSERVER_OAUTH_REDIRECT_HOSTS` | `claude.ai,claude.com` | 客户端注册时允许的 https 回调域名（另外允许 `http://localhost`） |
+| `DOCKERSERVER_OAUTH_ACCESS_TTL` / `_REFRESH_TTL` | 3600 / 2592000 | OAuth 令牌有效期（秒） |
 | `DOCKERSERVER_NODES` | — | 计算节点（见下） |
 | `DOCKERSERVER_LOCAL_EXECUTION` | 自动 | 是否也用本机 Docker（默认：没有可用节点时才用） |
 | `DOCKERSERVER_NODE_LOST_GRACE` | 120 | 节点失联多少秒后任务标记为 `lost` |
@@ -74,6 +78,17 @@ JSON 外面要保留单引号。令牌变量为空的节点会被跳过（日志
 调度规则：在放得下的节点中优先选空闲 CPU（其次内存）最多的；节点返回 409 就换下一个；都放不下
 则 `queued` 并重试；比所有节点都大则提交时直接拒绝。按节点测得的运行时间计费，扣费后在节点上
 删除该任务。
+
+### MCP 连接器的 OAuth
+
+claude.ai 和 Claude Desktop 的自定义连接器不支持自定义 header，而是使用 MCP OAuth 2.1。服务端用 MCP SDK
+的认证组件实现：`/.well-known/oauth-protected-resource/mcp`（以及 `/mcp-admin`）、
+`/.well-known/oauth-authorization-server`、`/register`（动态注册，回调地址限制在 `OAUTH_REDIRECT_HOSTS`）、
+`/authorize`（PKCE S256）→ `/oauth/consent`（用户粘贴 `ds_` 令牌，有 CSRF 防护和限流）、`/token`、`/revoke`。
+`/mcp` 返回 401 时带 `WWW-Authenticate: Bearer resource_metadata=…`。OAuth 令牌（`dsa_` 访问令牌 1 小时，
+`dsr_` 刷新令牌 30 天，每次刷新轮换）只存哈希，绑定用户、批准时用的 `ds_` 令牌、客户端和资源；用户被禁用/
+暂停或该 `ds_` 令牌被吊销时随即失效。OAuth 令牌只能用于签发它的 MCP 地址，不能用于 REST API。
+`Bearer ds_…` 方式不受影响。
 
 ## 计算节点（`node/`）
 

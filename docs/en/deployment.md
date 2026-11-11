@@ -53,6 +53,10 @@ the log shows `config file: …/.env (loaded)`. Template with every key: `server
 | `DOCKERSERVER_DEFAULT_MAX_CPUS` / `_MAX_MEM_MB` / `_MAX_RUN_SECONDS` / `_MAX_CONCURRENT_JOBS` | 1 / 256 / 600 / 2 | limits for new users |
 | `DOCKERSERVER_ALLOWED_HOSTS` | `127.0.0.1:8800,localhost:8800,compute.llmfreedomforge.com` | Host headers accepted by `/mcp`, `/mcp-admin` |
 | `DOCKERSERVER_AUTH_FAIL_LIMIT` / `_WINDOW` | 20 / 300 | bad tokens per client IP per window → 429 |
+| `DOCKERSERVER_PUBLIC_URL` | `https://compute.llmfreedomforge.com` | OAuth issuer / resource URLs |
+| `DOCKERSERVER_OAUTH` | `true` | OAuth for MCP custom connectors (claude.ai / Desktop) |
+| `DOCKERSERVER_OAUTH_REDIRECT_HOSTS` | `claude.ai,claude.com` | allowed https redirect hosts at client registration (plus `http://localhost`) |
+| `DOCKERSERVER_OAUTH_ACCESS_TTL` / `_REFRESH_TTL` | 3600 / 2592000 | OAuth token lifetimes (s) |
 | `DOCKERSERVER_NODES` | — | compute nodes (below) |
 | `DOCKERSERVER_LOCAL_EXECUTION` | auto | also use local Docker (default: only when no node is usable) |
 | `DOCKERSERVER_NODE_LOST_GRACE` | 120 | seconds unreachable before a job becomes `lost` |
@@ -75,6 +79,18 @@ After a restart the log shows `execution: compute nodes=['mini@http://…'], loc
 Scheduling: most free CPUs (then memory) first among nodes that fit; HTTP 409 → next node; nothing
 fits → `queued` and retried; larger than every node → rejected at submit. Billing uses the
 node-measured run time; jobs are deleted on the node after billing.
+
+### OAuth for MCP connectors
+
+claude.ai and Claude Desktop custom connectors authenticate with MCP OAuth 2.1 instead of a header.
+The server implements it with the MCP SDK's auth handlers: `/.well-known/oauth-protected-resource/mcp`
+(and `/mcp-admin`), `/.well-known/oauth-authorization-server`, `/register` (dynamic registration;
+redirect URIs limited to `OAUTH_REDIRECT_HOSTS`), `/authorize` (PKCE S256) → `/oauth/consent` (the
+user pastes a `ds_` token; CSRF-protected, rate-limited), `/token`, `/revoke`. 401 responses from
+`/mcp` carry `WWW-Authenticate: Bearer resource_metadata=…`. OAuth tokens (`dsa_` access 1 h,
+`dsr_` refresh 30 days, rotating) are stored hashed, bound to user + approving `ds_` token + client +
+resource, and are revoked when the user is disabled/suspended or that `ds_` token is revoked. They
+only work on the MCP endpoint they were issued for, not on the REST API. `Bearer ds_…` keeps working.
 
 ## Compute node (`node/`)
 

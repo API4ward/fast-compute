@@ -101,6 +101,12 @@ Config, add to `claude_desktop_config.json`, then restart Claude Desktop:
 
 Then just ask, e.g. *"Run this script on dockerserver with 2 CPUs and show me the output."*
 
+**claude.ai / Claude Desktop custom connector (no Node.js needed):** Settings → Connectors →
+*Add custom connector* → URL `https://compute.llmfreedomforge.com/mcp` (leave the OAuth client
+fields empty) → *Connect*. A fast-compute page opens: paste your `ds_…` token and click
+**Approve**. The app receives its own token (valid 1 h, renewed automatically); your `ds_` token is
+not shared with it. Revoking your `ds_` token, or your account being disabled, disconnects it.
+
 ### The 7 tools (`/mcp`) — always only your own jobs
 
 | Tool | Arguments | Returns |

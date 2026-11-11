@@ -62,6 +62,12 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     app = FastAPI(title="DockerServer", version=__version__, lifespan=lifespan)
     app.state.settings, app.state.Session, app.state.runner = settings, Session_, runner
     app.state.services = svc
+    if settings.oauth_enabled:
+        from .oauth import DSOAuthProvider, HostCheck, build_oauth_routes
+        svc.oauth = DSOAuthProvider(svc)
+        app.router.routes.extend(build_oauth_routes(svc, svc.oauth))
+        app.add_middleware(HostCheck, allowed=settings.allowed_hosts)
+
     for path, (_, asgi) in mcp_routes.items():
         # Exact-path routes (no /mcp -> /mcp/ redirect); the MCP apps handle their own auth.
         app.router.routes.append(Route(path, endpoint=asgi))
