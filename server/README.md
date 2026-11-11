@@ -230,6 +230,7 @@ controls their **own** jobs here.
 | `submit_job` | `command` + either `files` (`{path: text}`) or `git_url`; optional `image`, `cpus`, `mem_mb`, `timeout_seconds`, `network`, `wait` (0–60 s: block and return status + log tail) |
 | `list_jobs`, `get_job`, `get_job_logs` (`tail`), `stop_job` | my own jobs |
 | `get_balance`, `get_usage` | my credits, limits, usage totals / per day |
+| `list_env`, `set_env`, `delete_env` | my environment variables (injected into all my jobs; encrypted, owner-only) |
 
 **`/mcp-admin` — admin service** (admin tokens only; other tokens get HTTP 403).
 

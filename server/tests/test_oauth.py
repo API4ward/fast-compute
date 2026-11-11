@@ -144,7 +144,7 @@ def test_full_flow_refresh_and_revocation(srv):
 
     # the OAuth token works on /mcp only (not /mcp-admin, not the REST API)
     r = mcp(base, "/mcp", tok["access_token"])
-    assert r.status_code == 200 and len(r.json()["result"]["tools"]) == 7
+    assert r.status_code == 200 and len(r.json()["result"]["tools"]) == 10
     assert mcp(base, "/mcp-admin", tok["access_token"]).status_code == 401
     assert httpx.get(f"{base}/me", headers={"Authorization": f"Bearer {tok['access_token']}"}).status_code == 401
     # tools run as the approving user

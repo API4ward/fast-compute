@@ -56,6 +56,7 @@ sudo sh deploy/install-service.sh             # systemd 服务（只有 unit 文
 | `DOCKERSERVER_OAUTH` | `true` | 为 MCP 自定义连接器（claude.ai / Desktop）启用 OAuth |
 | `DOCKERSERVER_OAUTH_REDIRECT_HOSTS` | `claude.ai,claude.com` | 客户端注册时允许的 https 回调域名（另外允许 `http://localhost`） |
 | `DOCKERSERVER_OAUTH_ACCESS_TTL` / `_REFRESH_TTL` | 3600 / 2592000 | OAuth 令牌有效期（秒） |
+| `DOCKERSERVER_SECRET_KEY` | 首次启动时生成 | 加密用户环境变量的 Fernet 密钥，缺失时自动写入 `.env`。**请随 `.env` 一起备份；丢失后已保存的变量无法解密**（用户需要重新设置）。 |
 | `DOCKERSERVER_NODES` | — | 计算节点（见下） |
 | `DOCKERSERVER_LOCAL_EXECUTION` | 自动 | 是否也用本机 Docker（默认：没有可用节点时才用） |
 | `DOCKERSERVER_NODE_LOST_GRACE` | 120 | 节点失联多少秒后任务标记为 `lost` |
@@ -89,6 +90,9 @@ claude.ai 和 Claude Desktop 的自定义连接器不支持自定义 header，�
 `dsr_` 刷新令牌 30 天，每次刷新轮换）只存哈希，绑定用户、批准时用的 `ds_` 令牌、客户端和资源；用户被禁用/
 暂停或该 `ds_` 令牌被吊销时随即失效。OAuth 令牌只能用于签发它的 MCP 地址，不能用于 REST API。
 `Bearer ds_…` 方式不受影响。
+
+带环境变量的任务只会派给 `/v1/info` 中声明了 `"features": ["env"]` 的节点（支持环境变量的新版 agent）；
+如果没有节点支持，这类任务会被拒绝并给出明确的错误。请更新所有节点的 agent（在 `node/` 里 `git pull`，然后重启 `./start.sh`）。
 
 ## 计算节点（`node/`）
 

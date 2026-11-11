@@ -107,7 +107,7 @@ fields empty) → *Connect*. A fast-compute page opens: paste your `ds_…` toke
 **Approve**. The app receives its own token (valid 1 h, renewed automatically); your `ds_` token is
 not shared with it. Revoking your `ds_` token, or your account being disabled, disconnects it.
 
-### The 7 tools (`/mcp`) — always only your own jobs
+### The 10 tools (`/mcp`) — always only your own jobs
 
 | Tool | Arguments | Returns |
 |---|---|---|
@@ -118,6 +118,9 @@ not shared with it. Revoking your `ds_` token, or your account being disabled, d
 | `stop_job` | `job_id` | the stopped job (charged for time run) |
 | `get_balance` | — | `balance_hours`, `available_hours`, your limits |
 | `get_usage` | `start`, `end` (ISO, UTC), `include_jobs` | totals and per-day CPU-hours, GB-hours, cost |
+| `list_env` | `reveal` (false) | your saved environment variables (values masked unless `reveal`) |
+| `set_env` | `name`, `value` | save / replace a variable (used by all your jobs) |
+| `delete_env` | `name` | delete a variable |
 
 Example `submit_job` arguments:
 
@@ -183,12 +186,36 @@ print(job["status"], job["exit_code"], job["cost_hours"])
 print(requests.get(f"{DS}/jobs/{job['id']}/logs", headers=H).text)
 ```
 
-## 4. Web page
+## 4. Environment variables
+
+Save variables once (API keys, settings) and every job you run gets them; a job's own `env`
+overrides them for that job.
+
+- **Where:** the *Environment variables* section on `/ui`, the MCP tools `list_env` / `set_env` /
+  `delete_env`, or REST: `GET /me/env` (masked; `?reveal=true` shows values),
+  `PUT /me/env/{NAME}` with `{"value": "..."}`, `DELETE /me/env/{NAME}`.
+- **Per job:** `submit_job(..., env={"NAME": "value"})` (MCP) or the form field
+  `env='{"NAME":"value"}'` (REST, JSON).
+- **Rules:** names `[A-Za-z_][A-Za-z0-9_]*` (≤ 64 chars); values ≤ 4096 chars; ≤ 50 variables,
+  ≤ 32 KiB in total. Reserved (refused): `PATH`, `HOME`, `HOSTNAME`, `PWD`, `PYTHONHOME`,
+  `PYTHONUNBUFFERED`, and names starting with `LD_` or `DOCKERSERVER_`.
+- **Privacy:** values are stored encrypted, only you can see them (administrators can't), they are
+  never logged, and per-job values are not stored at all — a job only records the variable *names*
+  (`env_names`).
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"value":"sk-..."}' $DS/me/env/OPENAI_API_KEY
+curl -s -H "Authorization: Bearer $TOKEN" --form-string command='python -c "import os; print(os.environ[\"MODE\"])"' \
+  -F env='{"MODE":"test"}' $DS/jobs
+```
+
+## 5. Web page
 
 https://compute.llmfreedomforge.com/ui — paste your token to see balance, limits, your jobs (click
 one for its logs and a stop button) and usage per day. The token stays only in that browser tab.
 
-## 5. Troubleshooting
+## 6. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|

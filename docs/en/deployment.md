@@ -57,6 +57,7 @@ the log shows `config file: …/.env (loaded)`. Template with every key: `server
 | `DOCKERSERVER_OAUTH` | `true` | OAuth for MCP custom connectors (claude.ai / Desktop) |
 | `DOCKERSERVER_OAUTH_REDIRECT_HOSTS` | `claude.ai,claude.com` | allowed https redirect hosts at client registration (plus `http://localhost`) |
 | `DOCKERSERVER_OAUTH_ACCESS_TTL` / `_REFRESH_TTL` | 3600 / 2592000 | OAuth token lifetimes (s) |
+| `DOCKERSERVER_SECRET_KEY` | generated on first start | Fernet key encrypting users' environment variables. Written into `.env` automatically if missing. **Back it up with `.env`; if it is lost, stored variables can't be decrypted** (users must set them again). |
 | `DOCKERSERVER_NODES` | — | compute nodes (below) |
 | `DOCKERSERVER_LOCAL_EXECUTION` | auto | also use local Docker (default: only when no node is usable) |
 | `DOCKERSERVER_NODE_LOST_GRACE` | 120 | seconds unreachable before a job becomes `lost` |
@@ -91,6 +92,10 @@ user pastes a `ds_` token; CSRF-protected, rate-limited), `/token`, `/revoke`. 4
 `dsr_` refresh 30 days, rotating) are stored hashed, bound to user + approving `ds_` token + client +
 resource, and are revoked when the user is disabled/suspended or that `ds_` token is revoked. They
 only work on the MCP endpoint they were issued for, not on the REST API. `Bearer ds_…` keeps working.
+
+Jobs that carry environment variables are sent only to nodes whose `/v1/info` lists
+`"features": ["env"]` (node agent with env support); if no node supports it, such jobs are rejected with a
+clear error. Update every node's agent (`git pull` in `node/` and restart `./start.sh`).
 
 ## Compute node (`node/`)
 
