@@ -176,6 +176,12 @@ Let's Encrypt certificate) and reverse-proxies to it.
    120 s responses (MCP `wait`).
 4. **Check:** `curl -sI https://compute.llmfreedomforge.com/health`; logs: `journalctl -u caddy -f`.
 
+**Behind Cloudflare's proxy (orange cloud):** the domain currently resolves to Cloudflare, which
+forwards to Caddy. `install-caddy.sh` (default `BEHIND_CLOUDFLARE=1`) then trusts Cloudflare's
+published IP ranges and takes the visitor's address from `CF-Connecting-IP`, passing exactly that
+IP to the app — otherwise all visitors would appear as a few Cloudflare IPs and the per-IP
+auth-failure limit would lump them together. Re-run the script after changing this.
+
 The app is proxy-aware: uvicorn runs with `--proxy-headers --forwarded-allow-ips=127.0.0.1`, so the
 client IP from Caddy's `X-Forwarded-For` is used for the auth-failure rate limit, and `/mcp`'s
 host check accepts `compute.llmfreedomforge.com` (`DOCKERSERVER_ALLOWED_HOSTS`). Pages use only

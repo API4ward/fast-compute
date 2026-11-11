@@ -40,6 +40,9 @@ class JobRunner:
         self.Session = session_factory
         local = LocalDockerBackend(settings, client) if settings.use_local else None
         self.pool = pool or NodePool(settings, local=local)
+        log.warning("execution: compute nodes=%s, local docker=%s",
+                    [f"{b.name}@{getattr(b, 'url', '?')}" for b in self.pool.nodes] or "none",
+                    "on" if self.pool.local is not None else "off")
         self._lock = threading.Lock()
         self._threads: dict[int, threading.Thread] = {}
         self._handles: dict[int, Handle] = {}
