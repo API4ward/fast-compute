@@ -83,3 +83,13 @@ def test_assets_are_cache_busted(client):
     assert js and css
     r = client.get(js.group(1))
     assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+
+
+def test_job_tables_show_image(client):
+    # /ui uses jobsTable (common.js), /admin-ui uses adminJobsTable (admin.html)
+    js = client.get("/static/common.js").text
+    i = js.index("function jobsTable")
+    assert '"Image"' in js[i:i + 600] and "td(j.image)" in js[i:i + 1500]
+    html = client.get("/admin-ui").text
+    i = html.index("function adminJobsTable")
+    assert '"Image"' in html[i:i + 600] and "td(j.image)" in html[i:i + 1200]
