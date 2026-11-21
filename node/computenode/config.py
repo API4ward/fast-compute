@@ -71,6 +71,15 @@ class Settings:
     # Finished jobs nobody collected are cleaned up after this long.
     retain_seconds: int = field(default_factory=lambda: int(_env("RETAIN_SECONDS", "3600")))
     container_user: str = "65534:65534"  # nobody:nogroup
+    # ---- service jobs (a container port reachable from the bridge, see ingress.py) ----
+    # One forward port per running service, on this node's listen address.
+    ingress_port_min: int = field(default_factory=lambda: int(_env("INGRESS_PORT_MIN", "9100")))
+    ingress_port_max: int = field(default_factory=lambda: int(_env("INGRESS_PORT_MAX", "9199")))
+    # Each service uses two /28 networks from this range; it must not overlap the LAN or tailnet.
+    service_subnet: str = field(default_factory=lambda: _env("SERVICE_SUBNET", "10.213.0.0/16"))
+    service_relay_image: str = field(default_factory=lambda: _env("SERVICE_RELAY_IMAGE", "python:3.12-slim"))
+    max_service_seconds: int = field(default_factory=lambda: int(_env("MAX_SERVICE_SECONDS", str(30 * 86400))))
+    service_max_conns: int = field(default_factory=lambda: int(_env("SERVICE_MAX_CONNS", "64")))
 
     def image_allowed(self, image: str) -> bool:
         return "*" in self.allowed_images or image in self.allowed_images
