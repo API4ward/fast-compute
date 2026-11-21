@@ -14,6 +14,7 @@ import io
 import ipaddress
 import logging
 import re
+import secrets
 import tarfile
 import threading
 import time
@@ -390,11 +391,12 @@ class NodeRunner:
         target = app.attrs["NetworkSettings"]["Networks"][app_net.name]["IPAddress"]
         _, _, relay_name = self._service_names(job.id)
         self._ensure_image(self.s.service_relay_image)
+        secret = secrets.token_hex(32)   # held only by the forwarder and the relay
         relay = self.client.containers.run(
             self.s.service_relay_image, ["python", "-c", RELAY_CODE], name=relay_name, detach=True,
             labels={LABEL: job.id}, user=self.s.container_user,
             environment={"TARGET_HOST": target, "TARGET_PORT": str(job.service_port),
-                         "PYTHONUNBUFFERED": "1"},
+                         "RELAY_SECRET": secret, "PYTHONUNBUFFERED": "1"},
             network=edge_net.name, ports={f"{RELAY_PORT}/tcp": ("127.0.0.1", None)},
             read_only=True, cap_drop=["ALL"], security_opt=["no-new-privileges:true"],
             mem_limit="48m", memswap_limit="48m", pids_limit=self.s.service_max_conns * 2 + 16,
@@ -410,7 +412,7 @@ class NodeRunner:
         app_net.connect(relay)
         relay.reload()
         published = relay.attrs["NetworkSettings"]["Ports"][f"{RELAY_PORT}/tcp"][0]["HostPort"]
-        self.forwarder.open(self._listen_host(), job.ingress_port, int(published))
+        self.forwarder.open(self._listen_host(), job.ingress_port, int(published), secret.encode())
 
     def _listen_host(self) -> str:
         if self._ingress_host is None:

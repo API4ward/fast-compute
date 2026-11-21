@@ -117,6 +117,21 @@ def test_forwarder_passes_allowed_client(echo_server):
         f.shutdown()
 
 
+def test_forwarder_sends_preamble_first(echo_server):
+    f = Forwarder(["127.0.0.1"])
+    port = free_port()
+    f.open("127.0.0.1", port, echo_server, b"secret:")
+    try:
+        with socket.create_connection(("127.0.0.1", port), 3) as c:
+            c.sendall(b"hello")
+            got = b""
+            while len(got) < 12:
+                got += c.recv(16)
+            assert got == b"secret:hello"
+    finally:
+        f.shutdown()
+
+
 def test_forwarder_rejects_other_clients(echo_server):
     f = Forwarder(["100.82.2.33"])
     port = free_port()
@@ -176,6 +191,25 @@ for name, host, port in json.loads(os.environ["T"]):
         out[name] = "blocked"
     finally:
         s.close()
+print(json.dumps(out))
+"""
+
+# Connect-only is not evidence on Docker Desktop, whose network stack accepts TCP to any address.
+# This sends a real request and reports what actually came back.
+DATA_PROBE = """
+import json, os, socket
+out = {}
+for name, host, port in json.loads(os.environ["T"]):
+    s = socket.socket(); s.settimeout(3); d = b""
+    try:
+        s.connect((host, port)); s.sendall(b"GET / HTTP/1.0\\r\\nHost: x\\r\\n\\r\\n" + b" " * 64)
+        while c := s.recv(4096):
+            d += c
+    except OSError:
+        pass
+    finally:
+        s.close()
+    out[name] = d.decode(errors="replace")
 print(json.dumps(out))
 """
 
@@ -250,10 +284,25 @@ def test_service_end_to_end_and_isolated(docker_runner):
         assert all(v == "blocked" for v in result.values()), result
 
         # another container cannot reach the relay and so cannot skip the bridge's auth
-        res = bystander.exec_run(["python", "-c", PROBE], environment={"T": json.dumps(
-            [["relay edge", relay_edge_ip, 9000], ["app", app.attrs["NetworkSettings"]["Networks"]
-              [app_name]["IPAddress"] if app.reload() is None else "", 8080]])})
-        assert all(v == "blocked" for v in json.loads(res.output).values()), res.output
+        app.reload()
+        app_ip = app.attrs["NetworkSettings"]["Networks"][app_name]["IPAddress"]
+        res = bystander.exec_run(["python", "-c", DATA_PROBE], environment={"T": json.dumps(
+            [["relay edge", relay_edge_ip, 9000], ["app", app_ip, 8080]])})
+        assert "service-ok" not in json.loads(res.output)["relay edge"], res.output
+        assert "service-ok" not in json.loads(res.output)["app"], res.output
+
+        # even from the host side, the relay's published port serves nothing without the secret
+        published = relay.attrs["NetworkSettings"]["Ports"]["9000/tcp"][0]["HostPort"]
+        with socket.create_connection(("127.0.0.1", int(published)), 3) as c:
+            c.settimeout(8)
+            c.sendall(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n" + b" " * 64)
+            got = b""
+            try:
+                while d := c.recv(4096):
+                    got += d
+            except OSError:
+                pass
+        assert b"service-ok" not in got
     finally:
         bystander.remove(force=True)
 

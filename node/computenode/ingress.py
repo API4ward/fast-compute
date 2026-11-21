@@ -18,10 +18,26 @@ log = logging.getLogger("computenode.ingress")
 RELAY_PORT = 9000
 
 # Runs inside the relay container. Binds before the app network is attached, so the listener
-# exists only on the edge address. Prints "ready" once listening.
+# exists only on the edge address. Prints "ready" once listening. Every connection must open
+# with the per-service secret: Docker runtimes differ in whether other bridges can reach a
+# published container port (and may NAT them to the gateway), so the network is not the check.
 RELAY_CODE = r"""
-import os, socket, threading
+import hmac, os, socket, threading
 target = (os.environ["TARGET_HOST"], int(os.environ["TARGET_PORT"]))
+secret = os.environ.pop("RELAY_SECRET").encode()
+def authorized(c):
+    c.settimeout(5)
+    got = b""
+    try:
+        while len(got) < len(secret):
+            d = c.recv(len(secret) - len(got))
+            if not d:
+                return False
+            got += d
+    except OSError:
+        return False
+    c.settimeout(None)
+    return hmac.compare_digest(got, secret)
 def pump(a, b):
     try:
         while True:
@@ -37,6 +53,9 @@ def pump(a, b):
         except OSError:
             pass
 def serve(c):
+    if not authorized(c):
+        c.close()
+        return
     try:
         u = socket.create_connection(target, timeout=5)
         u.settimeout(None)
@@ -74,8 +93,9 @@ class Forwarder:
     def _call(self, coro, timeout=10):
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
 
-    def open(self, host: str, port: int, target_port: int):
-        self._call(self._open(host, port, target_port))
+    def open(self, host: str, port: int, target_port: int, preamble: bytes = b""):
+        """Forward host:port to 127.0.0.1:target_port, sending preamble first on each connection."""
+        self._call(self._open(host, port, target_port, preamble))
 
     def close(self, port: int):
         self._call(self._close(port))
@@ -91,7 +111,7 @@ class Forwarder:
                 log.exception("closing ingress port %s", port)
         self._loop.call_soon_threadsafe(self._loop.stop)
 
-    async def _open(self, host, port, target_port):
+    async def _open(self, host, port, target_port, preamble):
         conns: set[asyncio.Task] = set()
 
         async def handle(reader, writer):
@@ -104,6 +124,9 @@ class Forwarder:
             up = None
             try:
                 up_r, up = await asyncio.open_connection("127.0.0.1", target_port)
+                if preamble:
+                    up.write(preamble)
+                    await up.drain()
                 await asyncio.gather(_pump(reader, up), _pump(up_r, writer))
             except (OSError, asyncio.CancelledError):
                 pass
