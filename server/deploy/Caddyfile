@@ -15,7 +15,7 @@
 	}
 }
 
-compute.llmfreedomforge.com {
+compute.llmfreedomforge.com, compute-18-171-232-21.sslip.io {
 	encode gzip
 	request_body {
 		# uploads are capped at 50 MB by the app; allow multipart overhead
