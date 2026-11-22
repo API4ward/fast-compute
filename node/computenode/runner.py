@@ -11,8 +11,10 @@ compromised gateway still cannot get privileged containers or host mounts:
 Capacity is reserved per job; a job that does not fit is refused (HTTP 409).
 """
 import io
+import ipaddress
 import logging
 import re
+import secrets
 import tarfile
 import threading
 import time
@@ -20,9 +22,10 @@ from dataclasses import dataclass, field
 
 import docker
 from docker.errors import DockerException, ImageNotFound, NotFound
-from docker.types import LogConfig, Mount
+from docker.types import IPAMConfig, IPAMPool, LogConfig, Mount
 
 from .config import Settings
+from .ingress import RELAY_CODE, RELAY_PORT, Forwarder
 
 log = logging.getLogger("computenode.runner")
 LABEL = "computenode.job"
@@ -62,9 +65,15 @@ class NodeJob:
     container_id: str | None = None
     kill_reason: str | None = None
     env: dict = field(default_factory=dict, repr=False)   # never returned by the API, never logged
+    # service jobs only: container port, this node's forward port, and whether the app accepts TCP
+    service_port: int | None = None
+    ingress_port: int | None = None
+    service_ready: bool = False
+    relay_id: str | None = None
 
     def public(self) -> dict:
-        d = {k: v for k, v in self.__dict__.items() if k not in ("container_id", "kill_reason", "env")}
+        d = {k: v for k, v in self.__dict__.items()
+             if k not in ("container_id", "kill_reason", "env", "relay_id")}
         return d
 
 
@@ -77,6 +86,21 @@ class NodeRunner:
         self._stop = threading.Event()
         self.total_cpus = 0.0
         self.total_mem_mb = 0
+        self._ingress_ports: set[int] = set()   # held from submit until the service is torn down
+        self._forwarder: Forwarder | None = None
+        self._ingress_host: str | None = None
+
+    @property
+    def services_enabled(self) -> bool:
+        """Only with an explicit caller allowlist: the forward ports carry no token."""
+        return bool(self.s.allowed_clients)
+
+    @property
+    def forwarder(self) -> Forwarder:
+        with self._lock:
+            if self._forwarder is None:
+                self._forwarder = Forwarder(self.s.allowed_clients, self.s.service_max_conns)
+            return self._forwarder
 
     @property
     def client(self) -> docker.DockerClient:
@@ -98,6 +122,8 @@ class NodeRunner:
         for j in list(self.jobs.values()):
             if j.status in ACTIVE:
                 self.kill(j.id, "node shutting down")
+        if self._forwarder is not None:
+            self._forwarder.shutdown()
 
     def _cleanup_labelled(self):
         try:
@@ -105,6 +131,8 @@ class NodeRunner:
                 c.remove(force=True)
             for v in self.client.volumes.list(filters={"label": LABEL}):
                 v.remove(force=True)
+            for n in self.client.networks.list(filters={"label": LABEL}):
+                n.remove()
         except DockerException as e:
             log.warning("cleanup: %s", e)
 
@@ -134,7 +162,7 @@ class NodeRunner:
             "active_jobs": running, "allowed_images": self.s.allowed_images,
             "allow_network": self.s.allow_network,
             # capabilities the bridge checks before sending a job that needs them
-            "features": ["env"],
+            "features": ["env"] + (["service"] if self.services_enabled else []),
         }
 
     # ---------- jobs ----------
@@ -156,8 +184,14 @@ class NodeRunner:
             raise Refused("bad cpus / mem_mb / timeout_seconds")
         if not (0.05 <= cpus <= self.cap_cpus) or not (16 <= mem_mb <= self.cap_mem_mb):
             raise Refused("job is larger than this node", 409)
-        if not (1 <= timeout <= self.s.max_timeout_seconds):
+        service_port = check_service_port(spec.get("service_port"))
+        max_timeout = self.s.max_service_seconds if service_port else self.s.max_timeout_seconds
+        if not (1 <= timeout <= max_timeout):
             raise Refused("timeout_seconds out of range")
+        if service_port and not self.services_enabled:
+            raise Refused("service jobs need COMPUTENODE_ALLOWED_CLIENTS on this node", 403)
+        if service_port and spec.get("network"):
+            raise Refused("service jobs have no outbound network", 400)
         if workspace_tar is not None and len(workspace_tar) > self.s.max_upload_bytes:
             raise Refused("workspace too large", 413)
         if workspace_tar:
@@ -166,7 +200,8 @@ class NodeRunner:
         if network and not self.s.allow_network:
             raise Refused("network access is disabled on this node", 403)
         env = check_env(spec.get("env"))
-        job = NodeJob(jid, image, command, cpus, mem_mb, timeout, network, env=env)
+        job = NodeJob(jid, image, command, cpus, mem_mb, timeout, network, env=env,
+                      service_port=service_port)
         with self._lock:
             if jid in self.jobs:
                 raise Refused("job id already exists", 409)
@@ -174,6 +209,13 @@ class NodeRunner:
             if (sum(j.cpus for j in act) + cpus > self.cap_cpus + 1e-9
                     or sum(j.mem_mb for j in act) + mem_mb > self.cap_mem_mb):
                 raise Refused("node is full", 409)
+            if service_port:
+                job.ingress_port = next((p for p in range(self.s.ingress_port_min,
+                                                          self.s.ingress_port_max + 1)
+                                         if p not in self._ingress_ports), None)
+                if job.ingress_port is None:
+                    raise Refused("no free service port on this node", 409)
+                self._ingress_ports.add(job.ingress_port)
             self.jobs[jid] = job
         threading.Thread(target=self._run, args=(job, workspace_tar), name=f"job-{jid}",
                          daemon=True).start()
@@ -252,6 +294,7 @@ class NodeRunner:
                 helper.remove(force=True)
             ws = Mount("/workspace", vol.name, type="volume")
             mem = f"{job.mem_mb}m"
+            app_net, edge_net = self._create_service_networks(job) if job.service_port else (None, None)
             c = self.client.containers.create(
                 job.image, ["sh", "-c", job.command], name=cname, labels=labels,
                 user=s.container_user, working_dir="/workspace",
@@ -261,13 +304,16 @@ class NodeRunner:
                 read_only=True, privileged=False, cap_drop=["ALL"],
                 security_opt=["no-new-privileges:true"], pids_limit=s.pids_limit,
                 nano_cpus=int(job.cpus * 1e9), mem_limit=mem, memswap_limit=mem,
-                network_mode="bridge" if job.network else "none", ipc_mode="private",
+                network_mode=app_net.name if app_net else ("bridge" if job.network else "none"),
+                ipc_mode="private",
                 log_config=LogConfig(type="json-file", config={"max-size": "10m", "max-file": "1"}),
             )
             job.container_id = c.id
             if job.kill_reason:
                 raise _Killed()
             c.start()
+            if app_net:
+                self._start_ingress(job, c, app_net, edge_net)
             job.started_at, job.status = time.time(), "running"
             deadline = time.monotonic() + job.timeout_seconds
             timed_out = False
@@ -281,11 +327,15 @@ class NodeRunner:
                         pass
                     res = c.wait(timeout=30)
                     break
+                # poll faster until a service first accepts connections
+                interval = 2 if job.service_port and not job.service_ready else s.stats_interval
                 try:
-                    res = c.wait(timeout=min(remaining, s.stats_interval))
+                    res = c.wait(timeout=min(remaining, interval))
                     break
                 except Exception:  # noqa: BLE001 - read timeout: still running
                     self._sample(job, c)
+                    if job.service_port:
+                        self._check_service(job, c)
             job.finished_at = time.time()
             job.exit_code = res.get("StatusCode")
             c.reload()
@@ -303,6 +353,111 @@ class NodeRunner:
         except Exception as e:  # noqa: BLE001
             log.exception("job %s failed", job.id)
             job.status, job.error, job.finished_at = "error", f"{type(e).__name__}: {e}", time.time()
+        finally:
+            if job.service_port:
+                self._teardown_service(job)
+
+    # ---------- service jobs (see ingress.py) ----------
+    def _service_names(self, jid):
+        return f"computenode-app-{jid}", f"computenode-edge-{jid}", f"computenode-relay-{jid}"
+
+    def _service_subnets(self, ingress_port: int) -> tuple[str, str]:
+        """Two /28s derived from the forward port, so concurrent services never overlap."""
+        base = ipaddress.ip_network(self.s.service_subnet)
+        idx = (ingress_port - self.s.ingress_port_min) * 2
+        first = int(base.network_address) + idx * 16
+        if first + 32 > int(base.broadcast_address) + 1:
+            raise RuntimeError("COMPUTENODE_SERVICE_SUBNET is too small for the ingress port range")
+        return (f"{ipaddress.ip_address(first)}/28", f"{ipaddress.ip_address(first + 16)}/28")
+
+    def _create_service_networks(self, job: NodeJob):
+        app_name, edge_name, _ = self._service_names(job.id)
+        app_sub, edge_sub = self._service_subnets(job.ingress_port)
+        labels = {LABEL: job.id}
+        # internal + inhibit_ipv4: no route out and no Docker-host address the app could reach
+        app_net = self.client.networks.create(
+            app_name, driver="bridge", internal=True, labels=labels,
+            options={"com.docker.network.bridge.inhibit_ipv4": "true"},
+            ipam=IPAMConfig(pool_configs=[IPAMPool(subnet=app_sub)]))
+        edge_net = self.client.networks.create(
+            edge_name, driver="bridge", labels=labels,
+            options={"com.docker.network.bridge.enable_icc": "false",
+                     "com.docker.network.bridge.enable_ip_masquerade": "false"},
+            ipam=IPAMConfig(pool_configs=[IPAMPool(subnet=edge_sub)]))
+        return app_net, edge_net
+
+    def _start_ingress(self, job: NodeJob, app, app_net, edge_net):
+        app.reload()
+        target = app.attrs["NetworkSettings"]["Networks"][app_net.name]["IPAddress"]
+        _, _, relay_name = self._service_names(job.id)
+        self._ensure_image(self.s.service_relay_image)
+        secret = secrets.token_hex(32)   # held only by the forwarder and the relay
+        relay = self.client.containers.run(
+            self.s.service_relay_image, ["python", "-c", RELAY_CODE], name=relay_name, detach=True,
+            labels={LABEL: job.id}, user=self.s.container_user,
+            environment={"TARGET_HOST": target, "TARGET_PORT": str(job.service_port),
+                         "RELAY_SECRET": secret, "PYTHONUNBUFFERED": "1"},
+            network=edge_net.name, ports={f"{RELAY_PORT}/tcp": ("127.0.0.1", None)},
+            read_only=True, cap_drop=["ALL"], security_opt=["no-new-privileges:true"],
+            mem_limit="48m", memswap_limit="48m", pids_limit=self.s.service_max_conns * 2 + 16,
+            nano_cpus=int(0.5 * 1e9),
+            log_config=LogConfig(type="json-file", config={"max-size": "1m", "max-file": "1"}))
+        job.relay_id = relay.id
+        for _ in range(100):      # the listener must be bound before the app network is attached
+            if b"ready" in relay.logs():
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("service relay did not start")
+        app_net.connect(relay)
+        relay.reload()
+        published = relay.attrs["NetworkSettings"]["Ports"][f"{RELAY_PORT}/tcp"][0]["HostPort"]
+        self.forwarder.open(self._listen_host(), job.ingress_port, int(published), secret.encode())
+
+    def _listen_host(self) -> str:
+        if self._ingress_host is None:
+            self._ingress_host = self.s.bind_host()
+        return self._ingress_host
+
+    def _check_service(self, job: NodeJob, app):
+        """Ask the relay (never the user's container) whether the app port accepts TCP."""
+        if not job.relay_id:
+            return
+        try:
+            app_name = self._service_names(job.id)[0]
+            app.reload()
+            ip = app.attrs["NetworkSettings"]["Networks"][app_name]["IPAddress"]
+            code = (f"import socket; socket.create_connection(({ip!r}, {job.service_port}), 2).close()")
+            res = self.client.containers.get(job.relay_id).exec_run(["python", "-c", code])
+            job.service_ready = res.exit_code == 0
+        except (DockerException, KeyError):
+            job.service_ready = False
+
+    def _teardown_service(self, job: NodeJob):
+        job.service_ready = False
+        app_name, edge_name, relay_name = self._service_names(job.id)
+        if job.ingress_port is not None and self._forwarder is not None:
+            try:
+                self._forwarder.close(job.ingress_port)
+            except Exception:  # noqa: BLE001
+                log.exception("closing ingress for job %s", job.id)
+        for name in (relay_name, self._names(job.id)[0]):
+            try:
+                c = self.client.containers.get(name)
+                if name == relay_name:
+                    c.remove(force=True)
+                elif c.status == "running":   # a failed start must not leave the app running
+                    c.kill()
+            except (NotFound, DockerException):
+                pass
+        for name in (app_name, edge_name):
+            try:
+                self.client.networks.get(name).remove()
+            except (NotFound, DockerException) as e:
+                if not isinstance(e, NotFound):
+                    log.warning("removing network %s: %s", name, e)
+        with self._lock:
+            self._ingress_ports.discard(job.ingress_port)
 
     def _sample(self, job: NodeJob, c):
         try:
@@ -383,6 +538,15 @@ def check_env(env) -> dict:
     if total > 32 * 1024:
         raise Refused("environment variables too large")
     return dict(env)
+
+
+def check_service_port(port) -> int | None:
+    """Container port of a service job. Below 1024 is impossible for the unprivileged job user."""
+    if port is None:
+        return None
+    if isinstance(port, bool) or not isinstance(port, int) or not (1024 <= port <= 65535):
+        raise Refused("service_port must be an integer from 1024 to 65535")
+    return port
 
 
 class _Killed(Exception):

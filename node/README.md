@@ -30,4 +30,18 @@ Image allow-list; user nobody; read-only root fs; cap_drop ALL; no-new-privilege
 memory limits (no swap); noexec /tmp tmpfs; workspace is a per-job Docker volume, never a host
 path; no Docker socket; network `none` unless COMPUTENODE_ALLOW_NETWORK=true; local wall-clock timeout.
 
+## Service jobs
+
+A job spec with `service_port` (1024 to 65535) runs a long-lived app that the bridge can reach.
+The job view adds `ingress_port` (this node's forward port) and `service_ready` (the app accepts
+TCP). `/v1/info` lists the `service` feature only when COMPUTENODE_ALLOWED_CLIENTS is set, because
+forward ports carry no token and rely on that source-IP allowlist.
+
+Path: bridge -> forward port (9100 to 9199) -> relay container -> app container. The app sits on
+its own Docker `internal` network with `inhibit_ipv4`, so it has no route out and no Docker-host
+address to reach. The relay sits alone on a per-app edge network and listens only there. Service
+jobs cannot request outbound network. Keys: `COMPUTENODE_INGRESS_PORT_MIN/MAX`, `SERVICE_SUBNET`
+(default 10.213.0.0/16, must not overlap the LAN or tailnet), `SERVICE_RELAY_IMAGE`,
+`MAX_SERVICE_SECONDS`, `SERVICE_MAX_CONNS`.
+
 Config lives in `config.env` in this directory (see `computenode/config.py` for all keys).
