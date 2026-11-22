@@ -60,9 +60,11 @@ class Settings:
     reserve_cpus: float = field(default_factory=lambda: float(_env("RESERVE_CPUS", "1")))
     reserve_mem_mb: int = field(default_factory=lambda: int(_env("RESERVE_MEM_MB", "2048")))
     allowed_images: list[str] = field(default_factory=lambda: _list("ALLOWED_IMAGES", "python:3.12-slim"))
-    # Jobs asking for network=true get a bridge network; off by default so jobs
-    # cannot reach the host, the tailnet or the LAN.
+    # Jobs asking for network=true get public HTTP(S) only, through a per-job egress proxy
+    # (see egress.py); they still cannot reach the host, the tailnet or the LAN.
     allow_network: bool = field(default_factory=lambda: _env("ALLOW_NETWORK", "false").lower() in ("1", "true", "yes"))
+    egress_image: str = field(default_factory=lambda: _env("EGRESS_IMAGE", "python:3.12-slim"))
+    egress_ports: list[str] = field(default_factory=lambda: _list("EGRESS_PORTS", "80,443"))
     pids_limit: int = field(default_factory=lambda: int(_env("PIDS_LIMIT", "256")))
     tmp_size: str = field(default_factory=lambda: _env("TMP_SIZE", "64m"))
     max_upload_bytes: int = field(default_factory=lambda: int(_env("MAX_UPLOAD_BYTES", str(60 * 1024 * 1024))))

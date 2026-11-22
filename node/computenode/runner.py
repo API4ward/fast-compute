@@ -6,7 +6,8 @@ compromised gateway still cannot get privileged containers or host mounts:
   * cpu / memory limits (memswap == mem), pids limit, cap_drop ALL,
     no-new-privileges, read-only root fs, small noexec tmpfs on /tmp
   * runs as nobody (65534); writable /workspace is a per-job named volume
-  * no host bind mounts, no Docker socket; network "none" unless asked
+  * no host bind mounts, no Docker socket; network "none" unless asked, and then
+    public HTTP(S) only through a per-job egress proxy (see egress.py)
   * wall-clock timeout enforced locally (works even if the gateway disappears)
 Capacity is reserved per job; a job that does not fit is refused (HTTP 409).
 """
@@ -25,6 +26,7 @@ from docker.errors import DockerException, ImageNotFound, NotFound
 from docker.types import IPAMConfig, IPAMPool, LogConfig, Mount
 
 from .config import Settings
+from .egress import EGRESS_CODE, EGRESS_PROXY_PORT
 from .ingress import RELAY_CODE, RELAY_PORT, Forwarder
 
 log = logging.getLogger("computenode.runner")
@@ -271,6 +273,54 @@ class NodeRunner:
                 getter(name).remove(force=True)
             except (NotFound, DockerException):
                 pass
+        self._stop_egress(jid)
+
+    def _start_egress(self, job: NodeJob, labels: dict) -> tuple[str, dict]:
+        """Create the job's internal network and its proxy. Returns (network name, proxy env)."""
+        s = self.s
+        name = f"computenode-egress-{job.id}"
+        self._ensure_image(s.egress_image)
+        # internal + inhibit_ipv4: no route out and no Docker-host address the job could reach
+        self.client.networks.create(name, driver="bridge", internal=True, labels=labels,
+                                    options={"com.docker.network.bridge.inhibit_ipv4": "true"})
+        proxy = self.client.containers.create(
+            s.egress_image, ["python", "-c", EGRESS_CODE], name=name, labels=labels,
+            user=s.container_user, network=name,
+            environment={"EGRESS_PORT": str(EGRESS_PROXY_PORT),
+                         "EGRESS_PORTS": ",".join(s.egress_ports)},
+            read_only=True, privileged=False, cap_drop=["ALL"],
+            security_opt=["no-new-privileges:true"], pids_limit=128,
+            nano_cpus=int(0.5e9), mem_limit="64m", memswap_limit="64m", ipc_mode="private",
+            log_config=LogConfig(type="json-file", config={"max-size": "1m", "max-file": "1"}),
+        )
+        proxy.start()
+        for _ in range(100):      # the listener must be bound before the proxy gets a way out
+            if b"ready" in proxy.logs():
+                break
+            proxy.reload()
+            if proxy.status == "exited":
+                raise RuntimeError("egress proxy failed to start")
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("egress proxy did not become ready")
+        proxy.reload()
+        ip = proxy.attrs["NetworkSettings"]["Networks"][name]["IPAddress"]
+        self.client.networks.get("bridge").connect(proxy)
+        url = f"http://{ip}:{EGRESS_PROXY_PORT}"
+        return name, {"HTTP_PROXY": url, "HTTPS_PROXY": url, "http_proxy": url, "https_proxy": url}
+
+    def _stop_egress(self, jid: str):
+        name = f"computenode-egress-{jid}"
+        try:
+            self.client.containers.get(name).remove(force=True)
+        except (NotFound, DockerException):
+            pass
+        try:
+            self.client.networks.get(name).remove()
+        except NotFound:
+            pass
+        except DockerException as e:
+            log.warning("removing network %s: %s", name, e)
 
     def _run(self, job: NodeJob, payload: bytes | None):
         s = self.s
@@ -295,17 +345,17 @@ class NodeRunner:
             ws = Mount("/workspace", vol.name, type="volume")
             mem = f"{job.mem_mb}m"
             app_net, edge_net = self._create_service_networks(job) if job.service_port else (None, None)
+            net_mode, proxy_env = self._start_egress(job, labels) if job.network else ("none", {})
             c = self.client.containers.create(
                 job.image, ["sh", "-c", job.command], name=cname, labels=labels,
                 user=s.container_user, working_dir="/workspace",
-                environment={**job.env, "HOME": "/workspace", "PYTHONUNBUFFERED": "1"},
+                environment={**job.env, **proxy_env, "HOME": "/workspace", "PYTHONUNBUFFERED": "1"},
                 mounts=[ws],
                 tmpfs={"/tmp": f"rw,noexec,nosuid,nodev,size={s.tmp_size}"},
                 read_only=True, privileged=False, cap_drop=["ALL"],
                 security_opt=["no-new-privileges:true"], pids_limit=s.pids_limit,
                 nano_cpus=int(job.cpus * 1e9), mem_limit=mem, memswap_limit=mem,
-                network_mode=app_net.name if app_net else ("bridge" if job.network else "none"),
-                ipc_mode="private",
+                network_mode=app_net.name if app_net else net_mode, ipc_mode="private",
                 log_config=LogConfig(type="json-file", config={"max-size": "10m", "max-file": "1"}),
             )
             job.container_id = c.id
@@ -356,6 +406,8 @@ class NodeRunner:
         finally:
             if job.service_port:
                 self._teardown_service(job)
+            if job.network:
+                self._stop_egress(job.id)
 
     # ---------- service jobs (see ingress.py) ----------
     def _service_names(self, jid):
