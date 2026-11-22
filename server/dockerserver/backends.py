@@ -15,8 +15,10 @@ The runner (runner.py) drives a backend through: start -> wait/poll -> kill? -> 
 logs -> cleanup. Both backends take the same workspace tar (top-level "ws/" directory, entries
 owned by the in-container user), produced by workspace.build_workspace.
 """
+import io
 import json
 import logging
+import tarfile
 import time
 from dataclasses import dataclass, field
 
@@ -235,6 +237,23 @@ class LocalDockerBackend(Backend):
 _NODE_ACTIVE = {"preparing", "running"}
 
 
+def node_workspace(payload: bytes) -> bytes:
+    """Re-root the workspace tar for a compute node. A node unpacks at the root of the job's
+    /workspace volume, so the top-level "ws/" directory must not be part of the paths."""
+    if not payload:
+        return payload
+    out, n = io.BytesIO(), 0
+    with tarfile.open(fileobj=io.BytesIO(payload)) as src, \
+            tarfile.open(fileobj=out, mode="w", format=tarfile.GNU_FORMAT) as dst:
+        for m in src:
+            if not m.name.startswith("ws/"):
+                continue
+            m.name = m.name[3:]
+            dst.addfile(m, src.extractfile(m) if m.isfile() else None)
+            n += 1
+    return out.getvalue() if n else b""
+
+
 class RemoteNodeBackend(Backend):
     """Talks to one compute node agent over HTTP (tailnet), Bearer-token authenticated."""
 
@@ -305,8 +324,9 @@ class RemoteNodeBackend(Backend):
         if spec.env:
             body["env"] = spec.env          # only nodes advertising features: ["env"] get these jobs
         files = {"spec": (None, json.dumps(body), "application/json")}
-        if payload:
-            files["workspace"] = ("workspace.tar", payload, "application/x-tar")
+        workspace = node_workspace(payload)
+        if workspace:
+            files["workspace"] = ("workspace.tar", workspace, "application/x-tar")
         try:
             r = self._req("POST", "/v1/jobs", files=files,
                           timeout=httpx.Timeout(120.0, connect=5.0))
