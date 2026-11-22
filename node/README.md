@@ -28,7 +28,7 @@ Status: preparing, running, succeeded, failed, timeout, killed, error.
 
 Image allow-list; user nobody; read-only root fs; cap_drop ALL; no-new-privileges; pids, cpu and
 memory limits (no swap); noexec /tmp tmpfs; workspace is a per-job Docker volume, never a host
-path; no Docker socket; network `none` unless COMPUTENODE_ALLOW_NETWORK=true; local wall-clock timeout.
+path; no Docker socket; network `none` unless COMPUTENODE_ALLOW_NETWORK=true, and then public HTTP(S) only through a per-job egress proxy; local wall-clock timeout.
 
 ## Service jobs
 
