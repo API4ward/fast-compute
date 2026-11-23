@@ -107,7 +107,7 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     def render_page(name: str) -> HTMLResponse:
         # Asset URLs carry a content hash so browsers / Cloudflare never serve a stale copy.
         html = (static_dir / name).read_text()
-        for asset in ("common.js", "common.css"):
+        for asset in ("common.js", "common.css", "welcome.js"):
             digest = hashlib.sha256((static_dir / asset).read_bytes()).hexdigest()[:12]
             html = html.replace(f"/static/{asset}\"", f"/static/{asset}?v={digest}\"")
         return HTMLResponse(html, headers=page_headers)
@@ -127,6 +127,10 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     def user_ui():
         return render_page("user.html")
 
+    @app.get("/welcome", include_in_schema=False)
+    def welcome_ui():
+        return render_page("welcome.html")
+
     @app.get("/", include_in_schema=False)
     def root():
         return RedirectResponse("/ui")
@@ -144,6 +148,12 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     @app.get("/health")
     def health():
         return {"ok": True, "version": __version__}
+
+    @app.get("/info")
+    def info():
+        # Public: what the welcome page needs to describe the service. No user data.
+        return {"version": __version__, "allowed_images": settings.allowed_images,
+                "oauth": settings.oauth_enabled}
 
     @app.get("/me", response_model=UserOut)
     def me(user: CurrentUser):

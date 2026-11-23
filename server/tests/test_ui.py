@@ -93,3 +93,21 @@ def test_job_tables_show_image(client):
     html = client.get("/admin-ui").text
     i = html.index("function adminJobsTable")
     assert '"Image"' in html[i:i + 600] and "td(j.image)" in html[i:i + 1200]
+
+
+def test_welcome_page_public(client):
+    # /welcome needs no token; it loads the guide script and builds URLs from the request origin.
+    r = client.get("/welcome")
+    assert r.status_code == 200 and 'id="welcome"' in r.text
+    assert re.search(r'src="/static/welcome\.js\?v=[0-9a-f]{12}"', r.text)
+    js = client.get("/static/welcome.js").text
+    assert "location.origin" in js and "compute.llmfreedomforge.com" not in js
+    assert "zh:" in js and "en:" in js and "/mcp" in js
+    info = client.get("/info").json()
+    assert info["allowed_images"] and "version" in info
+
+
+def test_user_ui_has_welcome_tab(client):
+    html = client.get("/ui").text
+    assert 'data-tab="welcome"' in html and 'data-tab="dashboard"' in html
+    assert "/static/welcome.js" in html and 'href="/welcome"' in html

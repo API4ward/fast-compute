@@ -59,3 +59,13 @@ pre.logs { background: var(--code-bg); color: var(--code-text); padding: 12px; b
 #login input { width: 100%; margin: 8px 0 12px; }
 .hidden { display: none !important; }
 @media (max-width: 640px) { main { padding: 12px; } header { padding: 10px 12px; } }
+.welcome p, .welcome li { max-width: 860px; }
+.welcome ol, .welcome ul { padding-left: 22px; }
+.welcome li { margin: 4px 0; }
+.welcome th[scope=row] { width: 110px; vertical-align: top; text-transform: none; font-size: 13px; letter-spacing: 0; }
+.welcome blockquote { margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--row-hover); border-radius: 4px; }
+.welcome a { color: var(--accent); }
+.codebox { position: relative; margin: 8px 0; }
+.codebox pre.logs { margin: 0; padding-right: 72px; }
+.codebox .copy { position: absolute; top: 6px; right: 6px; font-size: 12px; padding: 2px 8px; }
+header a, #login a { color: var(--accent); }
