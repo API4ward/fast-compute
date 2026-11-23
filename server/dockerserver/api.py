@@ -6,8 +6,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
+import anyio
+import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
@@ -17,11 +19,12 @@ from starlette.routing import Route
 from . import __version__
 from .config import Settings, load_settings
 from .billing import grant_missing_initial
-from .models import Token, User, make_session_factory
+from .models import Site, Token, User, make_session_factory
 from .runner import JobRunner
-from .schemas import (AdminJobOut, CreditChange, EnvValue, JobOut, LedgerOut, TokenCreate, TokenIssued, TokenOut,
+from .schemas import (AdminJobOut, CreditChange, EnvValue, JobOut, LedgerOut, SiteFile, TokenCreate, TokenIssued, TokenOut,
                       UserCreate, UserCreated, UserOut, UserUpdate, ledger_out)
 from .services import ServiceError, Services
+from .sites import SiteError, SiteManager
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -35,13 +38,43 @@ class _NoCacheStatic(StaticFiles):
         return resp
 
 
+class _SitesHost:
+    """ASGI middleware keeping user web sites on their own origin (DOCKERSERVER_SITES_URL):
+    that host serves only /sites/..., and /sites/... on any other host redirects there."""
+
+    def __init__(self, app, sites_host: str | None, sites_base: str):
+        self.app, self.sites_host, self.sites_base = app, sites_host, sites_base
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and self.sites_host:
+            host = dict(scope.get("headers", [])).get(b"host", b"").decode().lower()
+            on_sites = scope["path"].startswith("/sites/")
+            if host == self.sites_host and not on_sites:
+                await PlainTextResponse("not found", status_code=404)(scope, receive, send)
+                return
+            if host != self.sites_host and on_sites:
+                q = scope.get("query_string", b"").decode()
+                url = self.sites_base + scope.get("raw_path", scope["path"].encode()).decode() + (f"?{q}" if q else "")
+                await RedirectResponse(url, status_code=307)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+_SITE_REQ_HEADERS = ("if-none-match", "if-modified-since", "range", "if-range")
+_SITE_RESP_HEADERS = ("content-type", "etag", "last-modified", "cache-control", "accept-ranges",
+                      "content-range")
+
+
 # ---------- app factory ----------
 def create_app(settings: Settings | None = None, runner: JobRunner | None = None,
-               recover: bool = True, enable_mcp: bool = True, pool=None) -> FastAPI:
+               recover: bool = True, enable_mcp: bool = True, pool=None,
+               site_runtime=None) -> FastAPI:
     settings = settings or load_settings()
     Session_ = make_session_factory(settings.db_url)
     runner = runner or JobRunner(settings, Session_, pool=pool)
     svc = Services(settings, Session_, runner)
+    svc.sites = SiteManager(settings, Session_, runtime=site_runtime)
+    site_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=3.0), trust_env=False)
     with Session_() as db:
         grant_missing_initial(db, settings.default_credit_hours)
 
@@ -55,10 +88,16 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     async def lifespan(_app):
         if recover:
             runner.recover()
-        async with AsyncExitStack() as stack:
-            for server, _ in mcp_routes.values():
-                await stack.enter_async_context(server.session_manager.run())
-            yield
+            await anyio.to_thread.run_sync(svc.sites.recover)
+        svc.sites.start()
+        try:
+            async with AsyncExitStack() as stack:
+                for server, _ in mcp_routes.values():
+                    await stack.enter_async_context(server.session_manager.run())
+                yield
+        finally:
+            svc.sites.shutdown()
+            await site_http.aclose()
 
     app = FastAPI(title="DockerServer", version=__version__, lifespan=lifespan)
     app.state.settings, app.state.Session, app.state.runner = settings, Session_, runner
@@ -68,6 +107,9 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
         svc.oauth = DSOAuthProvider(svc)
         app.router.routes.extend(build_oauth_routes(svc, svc.oauth))
         app.add_middleware(HostCheck, allowed=settings.allowed_hosts)
+
+    if settings.sites_host:
+        app.add_middleware(_SitesHost, sites_host=settings.sites_host, sites_base=settings.sites_base)
 
     for path, (_, asgi) in mcp_routes.items():
         # Exact-path routes (no /mcp -> /mcp/ redirect); the MCP apps handle their own auth.
@@ -179,7 +221,99 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     def del_env(name: str, db: DB, user: CurrentUser):
         svc.delete_env(db, user, name)
 
+    # ----- my static web sites -----
+    @app.get("/me/sites")
+    def my_sites(db: DB, user: CurrentUser):
+        return svc.list_sites(db, user)
+
+    @app.get("/me/sites/{site}/files")
+    def my_site_files(site: str, db: DB, user: CurrentUser):
+        return svc.list_site_files(db, user, site)
+
+    @app.put("/me/sites/{site}/files/{path:path}")
+    def put_site_file(site: str, path: str, body: SiteFile, db: DB, user: CurrentUser):
+        return svc.put_site_file(db, user, site, path, body.content, body.encoding)
+
+    @app.delete("/me/sites/{site}/files/{path:path}")
+    def delete_site_file(site: str, path: str, db: DB, user: CurrentUser):
+        return svc.delete_site_file(db, user, site, path)
+
+    @app.post("/me/sites/{site}/publish")
+    def publish_site(site: str, db: DB, user: CurrentUser):
+        return svc.publish_site(db, user, site, True)
+
+    @app.post("/me/sites/{site}/unpublish")
+    def unpublish_site(site: str, db: DB, user: CurrentUser):
+        return svc.publish_site(db, user, site, False)
+
+    @app.delete("/me/sites/{site}")
+    def delete_site(site: str, db: DB, user: CurrentUser):
+        return svc.delete_site(db, user, site)
+
+    # ----- public: serve published sites (wakes the site's container if it is asleep) -----
+    def _site_404(msg="site not found"):
+        return PlainTextResponse(msg, status_code=404, headers={"Cache-Control": "no-store"})
+
+    @app.api_route("/sites/{user_name}/{site_name}", methods=["GET", "HEAD"], include_in_schema=False)
+    def site_slash(user_name: str, site_name: str, request: Request):
+        # relative links in index.html only work under a trailing slash
+        q = request.url.query
+        return RedirectResponse(request.url.path + "/" + (f"?{q}" if q else ""), status_code=308)
+
+    @app.api_route("/sites/{user_name}/{site_name}/{rest:path}", methods=["GET", "HEAD"],
+                   include_in_schema=False)
+    async def serve_site(user_name: str, site_name: str, rest: str, request: Request):
+        with Session_() as db:
+            row = db.execute(select(Site.id, User.active, User.deleted_at, Site.published)
+                             .join(User, User.id == Site.user_id)
+                             .where(User.name == user_name, Site.name == site_name)).first()
+        if row is None or not row.published or not row.active or row.deleted_at is not None:
+            return _site_404()
+        site_id = row.id
+        raw = request.scope.get("raw_path", b"").decode("latin-1")
+        raw_prefix = f"/sites/{user_name}/{site_name}/"
+        upstream_path = raw.split("/", 4)[4] if raw.count("/") >= 4 else rest
+        fwd = {k: v for k, v in request.headers.items() if k.lower() in _SITE_REQ_HEADERS}
+        q = request.url.query
+        resp = None
+        for attempt in (1, 2):
+            try:
+                addr = await anyio.to_thread.run_sync(svc.sites.ensure_awake, site_id)
+            except SiteError as e:
+                return PlainTextResponse(e.message, status_code=e.status)
+            try:
+                resp = await site_http.request(
+                    request.method, f"http://{addr}/{upstream_path}" + (f"?{q}" if q else ""),
+                    headers=fwd)
+                break
+            except httpx.TransportError:
+                svc.sites.forget(site_id)   # container gone (e.g. stopped by hand): restart it once
+                if attempt == 2:
+                    return PlainTextResponse("site temporarily unavailable", status_code=502)
+        headers = {k: v for k, v in resp.headers.items() if k.lower() in _SITE_RESP_HEADERS}
+        loc = resp.headers.get("location")
+        if loc:
+            headers["location"] = (raw_prefix + loc.lstrip("/")) if loc.startswith("/") else loc
+        body = resp.content
+        svc.sites.record(site_id, len(body))
+        if request.method == "HEAD":
+            if "content-length" in resp.headers:
+                headers["content-length"] = resp.headers["content-length"]
+            return Response(status_code=resp.status_code, headers=headers)
+        return Response(body, status_code=resp.status_code, headers=headers)
+
     # ----- admin -----
+    @app.get("/admin/sites")
+    def admin_sites(db: DB, admin: Admin, user_id: int | None = None):
+        """Every user's sites: container (awake/asleep) and usage. No file contents."""
+        return svc.admin_sites(db, admin, user_id)
+
+    @app.delete("/admin/users/{user_id}")
+    def delete_user(user_id: int, db: DB, admin: Admin):
+        """Delete a user: kill their jobs, remove their sites (containers + files), variables
+        and tokens. Job and ledger history is kept."""
+        return svc.delete_user(db, admin, user_id)
+
     @app.post("/admin/users", response_model=UserCreated, status_code=201)
     def create_user(body: UserCreate, db: DB, admin: Admin):
         data = body.model_dump()

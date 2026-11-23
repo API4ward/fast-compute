@@ -26,6 +26,10 @@ class User(Base):
     max_run_seconds: Mapped[int] = mapped_column(Integer, default=600)
     max_concurrent_jobs: Mapped[int] = mapped_column(Integer, default=2)
     allow_network: Mapped[bool] = mapped_column(Boolean, default=False)
+    # How many static web sites the user may keep (see sites.py).
+    max_sites: Mapped[int] = mapped_column(Integer, default=3)
+    # Set when an admin deletes the account; the row stays so job/ledger history keeps its owner.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Credit balance in micro-hours (1 hour = 1 CPU core + 256 MB for 1 hour).
     # Always equal to the sum of this user's ledger entries.
     balance_uh: Mapped[int] = mapped_column(Integer, default=0)
@@ -51,6 +55,32 @@ class UserEnv(Base):
     name: Mapped[str] = mapped_column(String(64))
     value_enc: Mapped[bytes] = mapped_column(LargeBinary)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Site(Base):
+    """A user's static web site: files on the bridge's disk, served by a small nginx container
+    that is started on the first request and stopped after an idle period (see sites.py)."""
+    __tablename__ = "sites"
+    __table_args__ = (UniqueConstraint("user_id", "name"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(40))
+    published: Mapped[bool] = mapped_column(Boolean, default=False)
+    file_count: Mapped[int] = mapped_column(Integer, default=0)
+    bytes_stored: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_access_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # usage counters
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+    bytes_served: Mapped[int] = mapped_column(Integer, default=0)
+    wake_count: Mapped[int] = mapped_column(Integer, default=0)
+    awake_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    cost_uh: Mapped[int] = mapped_column(Integer, default=0)
+    # container while awake (None while asleep)
+    container_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    awake_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Token(Base):

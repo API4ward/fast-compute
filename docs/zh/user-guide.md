@@ -105,7 +105,9 @@ claude mcp add --transport http dockerserver https://compute.llmfreedomforge.com
 它自己的令牌（有效期 1 小时，自动续期），不会拿到你的 `ds_` 令牌。吊销你的 `ds_` 令牌或账号被
 禁用后，连接器随即失效。
 
-### 10 个工具（`/mcp`）——只作用于你自己的任务
+### 任务工具（`/mcp`）——只作用于你自己的任务
+
+站点工具见第 5 节。
 
 | 工具 | 参数 | 返回 |
 |---|---|---|
@@ -207,12 +209,59 @@ curl -s -H "Authorization: Bearer $TOKEN" --form-string command='python -c "impo
   -F env='{"MODE":"test"}' $DS/jobs
 ```
 
-## 5. 网页
+## 5. 静态网站（网页、浏览器游戏）
+
+把一组前端文件（HTML、JS、CSS、图片）保存在服务器上，通过公开的 HTTPS 地址只读提供。服务器端
+不执行任何代码，适合纯静态页面，比如浏览器游戏。
+
+| 工具 | 参数 | 返回 |
+|---|---|---|
+| `put_site_file` | `site`、`path`、`content`，可选 `encoding`（`utf-8` 默认，或 `base64` 用于图片等二进制） | 写入一个文件；站点第一次写入时自动创建 |
+| `publish_site` | `site` | `{url, ...}`：公开网址 |
+| `unpublish_site` | `site` | 下线（文件保留） |
+| `list_sites` | — | 你的站点：网址、是否发布、容器是否唤醒、文件数、大小、访问次数、流量、唤醒时长 |
+| `list_site_files` | `site` | 文件列表（路径、大小、修改时间） |
+| `delete_site_file` | `site`、`path` | 删除一个文件 |
+| `delete_site` | `site` | 下线并删除全部文件 |
+
+- **网址**：`https://<站点域名>/sites/<用户名>/<站点名>/`，根路径返回 `index.html`。站点放在子路径下，
+  所以文件之间请用相对路径引用（`game.js`、`img/a.png`），不要用 `/game.js`。
+- **规则**：站点名 1–40 个字符，小写字母、数字和 `-`。`path` 只能是站点内的相对路径，拒绝 `..`、
+  `.`、空段和以 `/` 开头的绝对路径。单文件最多 5 MB，单站点 50 MB、1000 个文件；每个用户默认最多
+  3 个站点（管理员可调整）。
+- **Content-Type**：按扩展名设置，文本类带 `charset=utf-8`（`.html` → `text/html; charset=utf-8`，
+  `.js` → `application/javascript; charset=utf-8`，另有 css、json、svg、png、jpg、woff2、mp3 等）。
+  不加 CSP，页面可以加载外部字体（如 fonts.googleapis.com）和 CDN。
+- **休眠**：每个站点由一个小 nginx 容器提供。1 小时无人访问后容器关闭，下次访问时自动启动，
+  首次加载多约 1 秒。文件一直保存，重新上传后线上立即生效（浏览器会重新校验缓存）。
+- **费用**：目前站点不扣额度（服务器可配置按唤醒时间收费），用量会记录。
+
+示例（MCP）：依次调用
+
+```json
+{"site": "gun-fu", "path": "index.html", "content": "<!doctype html>..."}
+{"site": "gun-fu", "path": "engine.js", "content": "..."}
+```
+
+然后 `publish_site {"site": "gun-fu"}`，打开返回的 `url`。
+
+REST：`PUT /me/sites/{site}/files/{path}`（JSON `{"content": "...", "encoding": "utf-8"}`）、
+`POST /me/sites/{site}/publish`、`POST /me/sites/{site}/unpublish`、`GET /me/sites`、
+`GET /me/sites/{site}/files`、`DELETE /me/sites/{site}/files/{path}`、`DELETE /me/sites/{site}`。
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  --data "$(python3 -c 'import json,sys; print(json.dumps({"content": open("index.html").read()}))')" \
+  $DS/me/sites/gun-fu/files/index.html
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $DS/me/sites/gun-fu/publish
+```
+
+## 6. 网页
 
 https://compute.llmfreedomforge.com/ui ：粘贴令牌后可以看到余额、限额、你的任务（点开可看日志、
 停止任务）和每日用量。令牌只保存在当前浏览器标签页里。
 
-## 6. 常见问题
+## 7. 常见问题
 
 | 现象 | 原因 / 解决 |
 |---|---|

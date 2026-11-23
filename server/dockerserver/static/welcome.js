@@ -35,7 +35,8 @@ const WELCOME_TEXT = {
     askBody: "Just ask Claude, for example:",
     askExample: "Use fast-compute to run this Python script with 1 CPU and show me the output.",
     toolsBody: "Claude uses these tools: submit_job, list_jobs, get_job, get_job_logs, stop_job, "
-      + "get_balance, get_usage, list_env, set_env, delete_env. A submit_job call looks like:",
+      + "get_balance, get_usage, list_env, set_env, delete_env (and the site tools in step 6). "
+      + "A submit_job call looks like:",
     restTitle: "Or with the REST API (curl)",
     restBody: "Upload a file or an archive (.zip, .tar, .tar.gz); it is unpacked into /workspace. "
       + "Pass command with --form-string so that ; and other characters are kept.",
@@ -55,6 +56,16 @@ const WELCOME_TEXT = {
       "A job costs run time × max(cpus, mem_mb / 256), charged once when it ends. You pay for the size you reserve, not what you use.",
       "Example: 2 CPU + 256 MB for 30 minutes = 1 credit-hour; 1 CPU + 1024 MB for 1 hour = 4.",
       "A job is refused if your credit cannot cover 60 s, and stopped (out_of_credits) if credit runs out while it runs. Ask the administrator for a top-up.",
+    ],
+    step6: "6. Host a static web page or browser game",
+    sitesIntro: "A site is a set of files (HTML, JS, CSS, images) kept on the server and served read-only at "
+      + "a public HTTPS address. Nothing runs on the server, so it is for pure front-end pages. Ask Claude, e.g.:",
+    sitesExample: "Publish these four files as a fast-compute site called gun-fu and give me the link.",
+    sitesSteps: [
+      "put_site_file(site, path, content): upload one file per call (text; or base64 with encoding=\"base64\" for images). Max 5 MB per file, 50 MB per site.",
+      "publish_site(site) → { url }: the address is <sites host>/sites/<your name>/<site>/ and serves index.html. Link files with relative paths (game.js, img/a.png).",
+      "list_sites, list_site_files, delete_site_file, unpublish_site, delete_site: manage them. Re-uploading a file updates the live site at once.",
+      "A site sleeps after an hour without visitors and wakes on the next visit (the first page load takes about a second longer). External fonts and CDNs work.",
     ],
     help: "Full guide: docs/en/user-guide.md in the fast-compute repository.",
     copy: "Copy", copied: "Copied",
@@ -88,7 +99,7 @@ const WELCOME_TEXT = {
     askBody: "直接对 Claude 说，例如：",
     askExample: "用 fast-compute 以 1 个 CPU 运行这个 Python 脚本，并把输出给我看。",
     toolsBody: "Claude 会用到这些工具：submit_job、list_jobs、get_job、get_job_logs、stop_job、"
-      + "get_balance、get_usage、list_env、set_env、delete_env。submit_job 的参数示例：",
+      + "get_balance、get_usage、list_env、set_env、delete_env（以及第 6 步的站点工具）。submit_job 的参数示例：",
     restTitle: "或使用 REST API（curl）",
     restBody: "上传单个文件或压缩包（.zip、.tar、.tar.gz），会解压到 /workspace。"
       + "command 请用 --form-string 传递，避免 ; 等字符被 curl 截断。",
@@ -108,6 +119,16 @@ const WELCOME_TEXT = {
       "任务费用 = 运行时间 × max(cpus, mem_mb / 256)，在任务结束时一次性扣除。按申请的规格计费，而不是实际用量。",
       "例如：2 CPU + 256 MB 运行 30 分钟 = 1 算力时；1 CPU + 1024 MB 运行 1 小时 = 4。",
       "余额不足 60 秒时任务会被拒绝；运行中额度耗尽会被停止（out_of_credits）。需要充值请联系管理员。",
+    ],
+    step6: "6. 托管静态网页或网页游戏",
+    sitesIntro: "站点是一组保存在服务器上的文件（HTML、JS、CSS、图片），以只读方式通过公开的 HTTPS 地址提供。"
+      + "服务器端不执行任何代码，适合纯前端页面。直接对 Claude 说，例如：",
+    sitesExample: "把这四个文件发布成 fast-compute 站点 gun-fu，并把网址给我。",
+    sitesSteps: [
+      "put_site_file(site, path, content)：每次上传一个文件（文本；图片等二进制用 base64 并传 encoding=\"base64\"）。单文件最大 5 MB，单站点 50 MB。",
+      "publish_site(site) → { url }：网址为 <站点域名>/sites/<你的用户名>/<站点名>/，根路径返回 index.html。文件之间请用相对路径引用（game.js、img/a.png）。",
+      "list_sites、list_site_files、delete_site_file、unpublish_site、delete_site：查看和管理。重新上传文件后线上立即生效。",
+      "站点 1 小时无人访问会自动休眠，下次访问时自动唤醒（首次加载多约 1 秒）。可以使用外部字体和 CDN。",
     ],
     help: "完整说明：fast-compute 仓库中的 docs/zh/user-guide.md。",
     copy: "复制", copied: "已复制",
@@ -181,7 +202,13 @@ async function renderWelcome(container, opts = {}) {
           el("tr", {}, el("th", { scope: "row" }, k), el("td", { class: "wrap" }, f(info))))))),
       el("div", { class: "panel welcome" },
         el("h2", {}, t.step5),
-        el("ul", {}, t.billing.map(b => el("li", {}, b))),
+        el("ul", {}, t.billing.map(b => el("li", {}, b)))),
+      el("div", { class: "panel welcome" },
+        el("h2", {}, t.step6),
+        el("p", {}, t.sitesIntro), el("blockquote", {}, t.sitesExample),
+        el("ol", {}, t.sitesSteps.map(b => el("li", {}, b))),
+        codeBlock(JSON.stringify({ site: "gun-fu", path: "index.html", content: "<!doctype html>…" }), t)),
+      el("div", { class: "panel welcome" },
         el("p", { class: "muted" }, t.help)));
   };
   draw(welcomeLang());

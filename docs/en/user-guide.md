@@ -107,7 +107,9 @@ fields empty) → *Connect*. A fast-compute page opens: paste your `ds_…` toke
 **Approve**. The app receives its own token (valid 1 h, renewed automatically); your `ds_` token is
 not shared with it. Revoking your `ds_` token, or your account being disabled, disconnects it.
 
-### The 10 tools (`/mcp`) — always only your own jobs
+### Job tools (`/mcp`) — always only your own jobs
+
+Site tools: see section 5.
 
 | Tool | Arguments | Returns |
 |---|---|---|
@@ -210,12 +212,53 @@ curl -s -H "Authorization: Bearer $TOKEN" --form-string command='python -c "impo
   -F env='{"MODE":"test"}' $DS/jobs
 ```
 
-## 5. Web page
+## 5. Static sites (web pages, browser games)
+
+Keep a set of front-end files (HTML, JS, CSS, images) on the server and serve them read-only at a
+public HTTPS address. Nothing runs on the server, so this is for purely static pages such as
+browser games.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `put_site_file` | `site`, `path`, `content`, optional `encoding` (`utf-8` default, or `base64` for images and other binary files) | writes one file; the site is created on the first write |
+| `publish_site` | `site` | `{url, ...}`: the public address |
+| `unpublish_site` | `site` | takes it offline (files kept) |
+| `list_sites` | — | your sites: URL, published, container awake, files, size, requests, bytes served, awake time |
+| `list_site_files` | `site` | files (path, size, modified) |
+| `delete_site_file` | `site`, `path` | deletes one file |
+| `delete_site` | `site` | takes it offline and deletes all files |
+
+- **Address**: `https://<sites host>/sites/<user>/<site>/`; the root serves `index.html`. Sites live
+  under a sub-path, so link files relatively (`game.js`, `img/a.png`), not as `/game.js`.
+- **Rules**: site names are 1–40 chars of lowercase letters, digits and `-`. `path` must be relative
+  to the site: `..`, `.`, empty segments and absolute paths are rejected. Max 5 MB per file, 50 MB
+  and 1000 files per site; 3 sites per user by default (admins can change it).
+- **Content-Type** comes from the extension, with `charset=utf-8` for text (`.html` →
+  `text/html; charset=utf-8`, `.js` → `application/javascript; charset=utf-8`, plus css, json, svg,
+  png, jpg, woff2, mp3 and more). No CSP is added, so external fonts (fonts.googleapis.com) and CDNs load.
+- **Sleep**: each site is served by a small nginx container. After an hour without visitors the
+  container is stopped; the next visit starts it again (the first load takes about a second longer).
+  Files are kept; re-uploading a file updates the live site at once (browsers revalidate).
+- **Cost**: sites are currently free (the server can be configured to charge for awake time); usage
+  is recorded.
+
+REST: `PUT /me/sites/{site}/files/{path}` (JSON `{"content": "...", "encoding": "utf-8"}`),
+`POST /me/sites/{site}/publish`, `POST /me/sites/{site}/unpublish`, `GET /me/sites`,
+`GET /me/sites/{site}/files`, `DELETE /me/sites/{site}/files/{path}`, `DELETE /me/sites/{site}`.
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  --data "$(python3 -c 'import json; print(json.dumps({"content": open("index.html").read()}))')" \
+  $DS/me/sites/gun-fu/files/index.html
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $DS/me/sites/gun-fu/publish
+```
+
+## 6. Web page
 
 https://compute.llmfreedomforge.com/ui — paste your token to see balance, limits, your jobs (click
 one for its logs and a stop button) and usage per day. The token stays only in that browser tab.
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|

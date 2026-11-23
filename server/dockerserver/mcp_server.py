@@ -37,7 +37,11 @@ unless your account allows it and you ask for it, killed at its timeout.
 Defaults: image python:3.12-slim, 1 CPU, 256 MB, your max run time. Call get_balance to see your
 limits and remaining credits. {PRICING} A job is refused unless you can afford 60 s at its size,
 and is stopped (status out_of_credits) if your credits run out while it runs.
-These tools only ever act on your own jobs."""
+Static web sites: put_site_file uploads one file at a time into a persistent site directory,
+publish_site makes it public and returns its URL (<base>/sites/<you>/<site>/; use relative links
+between files). Sites only serve files (nothing runs); a site sleeps after an idle hour and wakes
+on the next visit within about a second.
+These tools only ever act on your own jobs and sites."""
 
 ADMIN_INSTRUCTIONS = f"""DockerServer administration: users, limits, credits and usage.
 Admins cannot open, stop or read the logs of an individual user's job. To stop a user's
@@ -234,6 +238,49 @@ def build_user_mcp(svc: Services, path: str = "/mcp"):
             return {"name": name, "deleted": True}
         return call(ctx, run)
 
+    # ----- static web sites -----
+    @mcp.tool(description=(
+        "Write one file into one of my static web sites (created on first use; files persist). "
+        "`site`: 1-40 chars of a-z, 0-9, '-'. `path`: relative path inside the site, e.g. "
+        "'index.html' or 'js/game.js' (no '..' or leading '/'). `content`: the file's text "
+        "(utf-8), or base64 with encoding='base64' for binary files such as images. Max 5 MB per "
+        "file, 50 MB per site. Upload files one call at a time, then call publish_site."))
+    def put_site_file(ctx: Context, site: str, path: str, content: str,
+                      encoding: str = "utf-8") -> dict[str, Any]:
+        return call(ctx, lambda db, u: _jsonable(svc.put_site_file(db, u, site, path, content, encoding)))
+
+    @mcp.tool(description=(
+        "Make one of my sites public and return its URL ({url}). The site root serves index.html; "
+        "files are served read-only with correct Content-Type (utf-8 for text). Re-uploading "
+        "files later updates the live site immediately."))
+    def publish_site(ctx: Context, site: str) -> dict[str, Any]:
+        return call(ctx, lambda db, u: _jsonable(svc.publish_site(db, u, site, True)))
+
+    @mcp.tool(description="Take one of my sites offline (its files are kept; publish_site again "
+                          "to bring it back).")
+    def unpublish_site(ctx: Context, site: str) -> dict[str, Any]:
+        return call(ctx, lambda db, u: _jsonable(svc.publish_site(db, u, site, False)))
+
+    @mcp.tool(description="List my sites: URL, published, awake (container running), file "
+                          "count, size, requests, bytes served, awake hours.", annotations=RO)
+    def list_sites(ctx: Context) -> list[dict[str, Any]]:
+        return call(ctx, lambda db, u: _jsonable(svc.list_sites(db, u)))
+
+    @mcp.tool(description="List the files of one of my sites (path, size, modified).",
+              annotations=RO)
+    def list_site_files(ctx: Context, site: str) -> list[dict[str, Any]]:
+        return call(ctx, lambda db, u: _jsonable(svc.list_site_files(db, u, site)))
+
+    @mcp.tool(description="Delete one file from one of my sites.",
+              annotations=ToolAnnotations(destructiveHint=True, openWorldHint=False))
+    def delete_site_file(ctx: Context, site: str, path: str) -> dict[str, Any]:
+        return call(ctx, lambda db, u: svc.delete_site_file(db, u, site, path))
+
+    @mcp.tool(description="Delete one of my sites: take it offline and remove all its files.",
+              annotations=ToolAnnotations(destructiveHint=True, openWorldHint=False))
+    def delete_site(ctx: Context, site: str) -> dict[str, Any]:
+        return call(ctx, lambda db, u: svc.delete_site(db, u, site))
+
     return mcp, _asgi(mcp, svc, path, require_admin=False)
 
 
@@ -253,12 +300,13 @@ def build_admin_mcp(svc: Services, path: str = "/mcp-admin"):
 
     @mcp.tool(description="Create a user and return its first access token (shown once). "
                           "role: 'user' or 'admin'. Optional limits: max_cpus, max_mem_mb, "
-                          "max_run_seconds, max_concurrent_jobs, allow_network. New users get the "
+                          "max_run_seconds, max_concurrent_jobs, allow_network, max_sites. New users get the "
                           "default credit grant.")
     def create_user(ctx: Context, name: str, role: str = "user", max_cpus: float | None = None,
                     max_mem_mb: int | None = None, max_run_seconds: int | None = None,
                     max_concurrent_jobs: int | None = None,
-                    allow_network: bool | None = None) -> dict[str, Any]:
+                    allow_network: bool | None = None,
+                    max_sites: int | None = None) -> dict[str, Any]:
         if role not in ("user", "admin"):
             raise ToolError("role must be 'user' or 'admin'")
 
@@ -266,7 +314,7 @@ def build_admin_mcp(svc: Services, path: str = "/mcp-admin"):
             u, raw = svc.create_user(db, admin, name, role, max_cpus=max_cpus, max_mem_mb=max_mem_mb,
                                      max_run_seconds=max_run_seconds,
                                      max_concurrent_jobs=max_concurrent_jobs,
-                                     allow_network=allow_network)
+                                     allow_network=allow_network, max_sites=max_sites)
             return {**user_dict(u), "token": raw}
         return call(ctx, run)
 
@@ -278,15 +326,16 @@ def build_admin_mcp(svc: Services, path: str = "/mcp-admin"):
 
     @mcp.tool(description="Change a user's per-job limits and/or role. Only the given fields "
                           "change: max_cpus, max_mem_mb, max_run_seconds, max_concurrent_jobs, "
-                          "allow_network, role ('user'/'admin'). Applies to new jobs only.")
+                          "allow_network, max_sites, role ('user'/'admin'). Applies to new jobs only.")
     def set_user_limits(ctx: Context, user_id: int, max_cpus: float | None = None,
                         max_mem_mb: int | None = None, max_run_seconds: int | None = None,
                         max_concurrent_jobs: int | None = None, allow_network: bool | None = None,
-                        role: str | None = None) -> dict[str, Any]:
+                        role: str | None = None, max_sites: int | None = None) -> dict[str, Any]:
         changes = {k: v for k, v in {"max_cpus": max_cpus, "max_mem_mb": max_mem_mb,
                                      "max_run_seconds": max_run_seconds,
                                      "max_concurrent_jobs": max_concurrent_jobs,
-                                     "allow_network": allow_network, "role": role}.items()
+                                     "allow_network": allow_network, "role": role,
+                                     "max_sites": max_sites}.items()
                    if v is not None}
         if not changes:
             raise ToolError("nothing to change")
@@ -294,7 +343,8 @@ def build_admin_mcp(svc: Services, path: str = "/mcp-admin"):
             raise ToolError("role must be 'user' or 'admin'")
         if (max_cpus is not None and max_cpus <= 0) or (max_mem_mb is not None and max_mem_mb < 32) \
                 or (max_run_seconds is not None and max_run_seconds < 1) \
-                or (max_concurrent_jobs is not None and max_concurrent_jobs < 1):
+                or (max_concurrent_jobs is not None and max_concurrent_jobs < 1) \
+                or (max_sites is not None and max_sites < 0):
             raise ToolError("limits must be positive (max_mem_mb >= 32)")
         return call(ctx, lambda db, a: user_dict(svc.update_user(db, a, user_id, changes)))
 
@@ -304,6 +354,19 @@ def build_admin_mcp(svc: Services, path: str = "/mcp-admin"):
               annotations=ToolAnnotations(destructiveHint=True, openWorldHint=False))
     def suspend_user(ctx: Context, user_id: int) -> dict[str, Any]:
         return call(ctx, lambda db, a: svc.suspend_user(db, a, user_id))
+
+    @mcp.tool(description="Delete a user: kill all their running jobs, delete their static sites "
+                          "(containers and files), saved variables and tokens. Their job and "
+                          "credit history is kept. Cannot be undone.",
+              annotations=ToolAnnotations(destructiveHint=True, openWorldHint=False))
+    def delete_user(ctx: Context, user_id: int) -> dict[str, Any]:
+        return call(ctx, lambda db, a: svc.delete_user(db, a, user_id))
+
+    @mcp.tool(description="Every user's static web sites (or one user's): URL, whether its "
+                          "container is awake, files, size, requests, bytes served, awake hours, "
+                          "wake-ups and cost. No file contents.", annotations=RO)
+    def list_sites(ctx: Context, user_id: int | None = None) -> list[dict[str, Any]]:
+        return call(ctx, lambda db, a: _jsonable(svc.admin_sites(db, a, user_id)))
 
     @mcp.tool(description="Read-only job metadata (id, user, status, size, times, cost, CPU/memory "
                           "stats) for one user (user_id) or all users. No commands, code or logs.",

@@ -159,6 +159,44 @@ class Settings:
     oauth_access_ttl: int = field(default_factory=lambda: int(_env("OAUTH_ACCESS_TTL", "3600")))
     oauth_refresh_ttl: int = field(default_factory=lambda: int(_env("OAUTH_REFRESH_TTL", str(30 * 86400))))
 
+    # ---- static web sites (sites.py) ----
+    # Public base URL the sites are served under: <SITES_URL>/sites/<user>/<site>/. Use a host
+    # of its own (not PUBLIC_URL's) so user pages never share an origin with /ui and /admin-ui.
+    # Empty = PUBLIC_URL (works, but user pages then share the web UI's origin).
+    sites_url: str = field(default_factory=lambda: _env("SITES_URL", "").rstrip("/"))
+    site_image: str = field(default_factory=lambda: _env("SITE_IMAGE", "nginx:alpine"))
+    site_network: str = field(default_factory=lambda: _env("SITE_NETWORK", "fc-sites"))
+    # A site container with no request for this long is stopped; the next request starts it again.
+    site_idle_seconds: int = field(default_factory=lambda: int(_env("SITE_IDLE_SECONDS", "3600")))
+    # At most this many site containers awake at once (least recently used ones are stopped).
+    site_max_awake: int = field(default_factory=lambda: int(_env("SITE_MAX_AWAKE", "20")))
+    site_max_file_bytes: int = field(default_factory=lambda: int(_env("SITE_MAX_FILE_BYTES", str(5 * 1024 * 1024))))
+    site_max_bytes: int = field(default_factory=lambda: int(_env("SITE_MAX_BYTES", str(50 * 1024 * 1024))))
+    site_max_files: int = field(default_factory=lambda: int(_env("SITE_MAX_FILES", "1000")))
+    default_max_sites: int = field(default_factory=lambda: int(_env("DEFAULT_MAX_SITES", "3")))
+    # Credit-hours charged per hour a site container is awake (0 = sites are free; usage is
+    # still recorded).
+    site_credit_per_hour: float = field(default_factory=lambda: float(_env("SITE_CREDIT_PER_HOUR", "0")))
+    # How often idle sites are checked and usage counters are written to the database.
+    site_reap_interval: float = field(default_factory=lambda: float(_env("SITE_REAP_INTERVAL", "30")))
+
+    @property
+    def sites_base(self) -> str:
+        return self.sites_url or self.public_url
+
+    @property
+    def sites_host(self) -> str | None:
+        """Host (with port, if any) reserved for sites, or None when they share PUBLIC_URL."""
+        if not self.sites_url:
+            return None
+        from urllib.parse import urlsplit
+        host = urlsplit(self.sites_url).netloc.lower()
+        return None if host == urlsplit(self.public_url).netloc.lower() else host
+
+    @property
+    def sites_dir(self) -> Path:
+        return self.data_dir / "sites"
+
     @property
     def use_local(self) -> bool:
         return self.local_execution if self.local_execution is not None else not self.nodes

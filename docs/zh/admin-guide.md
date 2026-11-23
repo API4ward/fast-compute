@@ -24,6 +24,9 @@ CPU/内存）。影响用户正在运行任务的唯一方式是**暂停**该用
   （充值、调整、任务扣费，以及每笔之后的余额）。
 - **Jobs（任务）**：所有用户任务的只读列表（可按状态筛选）。
 - **Usage（用量）**：按日期范围统计每个用户的任务数、运行时间、CPU 小时、GB 小时和费用。
+- **Sites（站点）**：每个用户的站点容器汇总（站点数、唤醒中的容器、存储、访问次数、流量、唤醒时长、
+  费用），以及所有站点的明细（容器名 `fc-site-<id>`、唤醒/休眠、文件数、最后访问）。只读，看不到文件内容。
+  用户详情里也有该用户的站点列表，以及 **Delete user（删除用户）** 按钮。
 
 ## 禁用与暂停
 
@@ -34,6 +37,10 @@ CPU/内存）。影响用户正在运行任务的唯一方式是**暂停**该用
 | 启用（`set_user_status active=true`，`POST /admin/users/{id}/enable`） | 恢复可用 | 可以提交 | — |
 
 管理员不能禁用或暂停自己。
+
+**删除用户**（`delete_user`，`DELETE /admin/users/{id}`，网页需要再输入一次用户名确认）：杀掉该用户
+正在运行的任务，停止并删除他的所有站点容器和站点文件，删除保存的环境变量，吊销所有令牌。任务和额度
+流水保留用于统计；用户从列表中隐藏，用户名可以重新使用。**不可撤销。** 管理员不能删除自己。
 
 ## 管理 MCP：`/mcp-admin`（只接受管理员令牌，其他令牌返回 403）
 
@@ -58,6 +65,8 @@ claude mcp add --transport http dockerserver-admin https://compute.llmfreedomfor
 | `usage_report` | `start?`、`end?`（UTC） |
 | `issue_token` | `user_id`、`name` → 新令牌（只显示一次） |
 | `revoke_token` | `token_id` |
+| `delete_user` | `user_id` → 被杀的任务、被删除的站点 |
+| `list_sites` | `user_id?` → 每个站点的容器状态和用量（不含文件内容） |
 
 ## 管理 REST API
 
@@ -73,6 +82,8 @@ claude mcp add --transport http dockerserver-admin https://compute.llmfreedomfor
 | GET | `/admin/users/{id}/ledger?limit=` | 额度流水 |
 | GET | `/admin/jobs?user_id=&status=&limit=` | 任务元数据（不含命令、代码、日志） |
 | GET | `/admin/usage?start=&end=` | 用量报表 |
+| GET | `/admin/sites?user_id=` | 站点、容器状态和用量 |
+| DELETE | `/admin/users/{id}` | 删除用户及其站点、容器 |
 
 ```bash
 export DS=https://compute.llmfreedomforge.com ADMIN=ds_管理员令牌
@@ -94,6 +105,8 @@ curl -s -H "Authorization: Bearer $ADMIN" "$DS/admin/usage?start=2026-11-01T00:0
   `_MAX_CONCURRENT_JOBS`（2）。修改默认值不影响已有用户。
 - 即使用户限额允许，比所有计算节点都大的任务也会被拒绝。
 - 联网需要用户的 `allow_network`，同时节点上设置 `COMPUTENODE_ALLOW_NETWORK=true`。
+- 站点：每个用户最多 `max_sites` 个（新用户默认 `DOCKERSERVER_DEFAULT_MAX_SITES` = 3，0 表示不能建站），
+  在用户详情或 `set_user_limits` 中修改。其余站点参数见部署文档。
 
 ## CLI（在服务器上的 `server/` 目录中执行）
 
