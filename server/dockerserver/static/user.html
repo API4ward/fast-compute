@@ -50,6 +50,12 @@
         <button class="btn primary" type="submit">Save</button>
       </form>
     </div>
+    <div class="panel">
+      <h2>My web sites</h2>
+      <p class="muted">Static sites you upload with the <code>put_site_file</code> / <code>publish_site</code>
+        tools. Each sleeps after an idle hour and wakes on the next visit.</p>
+      <div id="sites"></div>
+    </div>
     <div class="panel hidden" id="job-detail"></div>
     <div class="panel"><h2>Usage per day</h2><div id="per-day"></div></div>
   </section>
@@ -79,6 +85,28 @@ async function load() {
       : el("p", { class: "muted" }, "No usage yet."));
   } catch (e) { showMsg(document.querySelector("main"), e.message); }
 }
+function fmtBytes(b) {
+  if (b < 1024) return b + " B";
+  if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
+  return (b / 1048576).toFixed(1) + " MB";
+}
+async function loadSites() {
+  const box = $("sites");
+  try {
+    const sites = await api("/me/sites");
+    clear(box).append(sites.length ? table(["Site", "Address", "State", { label: "Files", num: true },
+      { label: "Size", num: true }, { label: "Visits", num: true }, "Last visit", ""],
+      sites.map(s => el("tr", {}, td(s.site),
+        td(s.published ? el("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.url) : el("span", { class: "muted" }, "not published"), "wrap"),
+        td(s.awake ? "awake" : "asleep"), td(s.file_count, "num"), td(fmtBytes(s.bytes_stored), "num"),
+        td(s.requests, "num"), td(fmtTime(s.last_access_at)),
+        td(el("button", { class: "btn danger", onclick: async () => {
+          if (!confirm(`Delete site ${s.site} and all its files?`)) return;
+          try { await api(`/me/sites/${encodeURIComponent(s.site)}`, { method: "DELETE" }); loadSites(); }
+          catch (e) { showMsg(box, e.message); }
+        } }, "Delete"))))) : el("p", { class: "muted" }, "No sites yet."));
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+}
 async function loadEnv(reveal = false) {
   const box = $("env");
   try {
@@ -102,7 +130,7 @@ $("env-form").addEventListener("submit", async ev => {
     ev.target.reset(); loadEnv();
   } catch (e) { showMsg($("env"), e.message); }
 });
-$("refresh").addEventListener("click", load);
+$("refresh").addEventListener("click", () => { load(); loadSites(); });
 const TAB_KEY = "fastcompute_ui_tab";
 function showTab(name) {
   document.querySelector(`nav button[data-tab="${name}"]`).click();
@@ -110,7 +138,7 @@ function showTab(name) {
 setupTabs(tab => { try { localStorage.setItem(TAB_KEY, tab); } catch {} });
 initLogin({ requireAdmin: false, onReady: async (me) => {
   renderWelcome($("welcome"), { me });
-  load(); loadEnv();
+  load(); loadEnv(); loadSites();
   // First visit (no saved choice and no jobs yet): open on Welcome; otherwise where the user left off.
   let saved = null;
   try { saved = localStorage.getItem(TAB_KEY); } catch {}

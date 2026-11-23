@@ -14,6 +14,7 @@ class Limits(BaseModel):
     max_run_seconds: int | None = Field(None, ge=1, le=7 * 24 * 3600)
     max_concurrent_jobs: int | None = Field(None, ge=1, le=100)
     allow_network: bool | None = None
+    max_sites: int | None = Field(None, ge=0, le=100)
 
 
 class UserCreate(Limits):
@@ -37,6 +38,7 @@ class UserOut(BaseModel):
     max_run_seconds: int
     max_concurrent_jobs: int
     allow_network: bool
+    max_sites: int = 3
     balance_hours: float
     created_at: datetime
 
@@ -159,3 +161,8 @@ def usage_totals(jobs: list[Job]) -> dict:
         t["mem_gb_hours"] += j.mem_mb / 1024 * sec / 3600
         t["cost_hours"] += accrued_uh(j) / UH_PER_HOUR
     return {k: round(v, 6) if isinstance(v, float) else v for k, v in t.items()}
+
+
+class SiteFile(BaseModel):
+    content: str = Field(max_length=8 * 1024 * 1024)
+    encoding: Literal["utf-8", "base64"] = "utf-8"

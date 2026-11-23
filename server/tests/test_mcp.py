@@ -71,9 +71,11 @@ def test_bad_token_rejected(server):
 
 
 USER_TOOLS = {"submit_job", "list_jobs", "get_job", "get_job_logs", "stop_job", "get_balance", "get_usage",
-              "list_env", "set_env", "delete_env"}
+              "list_env", "set_env", "delete_env", "put_site_file", "publish_site", "unpublish_site",
+              "list_sites", "list_site_files", "delete_site_file", "delete_site"}
 ADMIN_TOOLS = {"list_users", "create_user", "set_user_status", "set_user_limits", "suspend_user",
-               "list_user_jobs", "add_credits", "get_ledger", "usage_report", "issue_token", "revoke_token"}
+               "list_user_jobs", "add_credits", "get_ledger", "usage_report", "issue_token", "revoke_token",
+               "delete_user", "list_sites"}
 
 
 async def _names(s):
@@ -117,6 +119,36 @@ def test_user_and_admin_services_are_separate(server):
         return await s.call_tool("submit_job", {"command": "true", "cpus": 4})
     res = mcp_call(server["base"], server["user"], over_limit)
     assert res.is_error and "limit" in res.content[0].text
+
+
+def test_site_tools(server):
+    files = {"index.html": "<h1>枪斗术</h1><script src=game.js></script>", "game.js": "let x = '中';"}
+
+    async def run(s):
+        out = []
+        for path, text in files.items():
+            out.append((await s.call_tool("put_site_file", {"site": "gun-fu", "path": path,
+                                                             "content": text})).structured_content)
+        bad = await s.call_tool("put_site_file", {"site": "gun-fu", "path": "../x", "content": "x"})
+        pub = (await s.call_tool("publish_site", {"site": "gun-fu"})).structured_content
+        lst = (await s.call_tool("list_sites", {})).structured_content
+        fls = (await s.call_tool("list_site_files", {"site": "gun-fu"})).structured_content
+        return out, bad, pub, lst, fls
+    out, bad, pub, lst, fls = mcp_call(server["base"], server["user"], run)
+    assert out[1]["site_files"] == 2 and out[1]["bytes"] == len(files["game.js"].encode())
+    assert bad.is_error and "400" in bad.content[0].text
+    assert pub["published"] and pub["url"].endswith("/sites/uma/gun-fu/")
+    assert lst["result"][0]["site"] == "gun-fu"
+    assert sorted(f["path"] for f in fls["result"]) == ["game.js", "index.html"]
+
+    async def admin_list(s):
+        return (await s.call_tool("list_sites", {})).structured_content
+    rows = mcp_call(server["base"], server["admin"], admin_list, "/mcp-admin")["result"]
+    assert rows[0]["user"] == "uma" and rows[0]["file_count"] == 2
+
+    async def dele(s):
+        return (await s.call_tool("delete_site", {"site": "gun-fu"})).structured_content
+    assert mcp_call(server["base"], server["user"], dele)["deleted"] is True
 
 
 @needs_docker

@@ -3,9 +3,12 @@
 Every function takes an explicit db session and the acting user, enforces
 permissions/limits/credits, and raises ServiceError(status, message) on refusal.
 """
+import base64
+import binascii
 import io
 import tarfile
 from datetime import datetime
+from urllib.parse import quote
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -16,8 +19,9 @@ from .oauth import revoke_for_ds_token, revoke_for_user
 from .billing import (accrued_uh, add_entry, available_uh, cost_uh, grant_initial, hours,
                       to_uh)
 from .config import Settings
-from .models import ACTIVE_STATUSES, TERMINAL_STATUSES, Job, LedgerEntry, Token, User, utcnow
+from .models import ACTIVE_STATUSES, TERMINAL_STATUSES, Job, LedgerEntry, Site, Token, User, UserEnv, utcnow
 from .runner import JobRunner
+from .sites import SiteError, SiteManager, check_site_name, clean_path
 from .userenv import EnvError, EnvStore
 from .schemas import AdminJobOut, JobOut, UserOut, ledger_out, usage_totals
 
@@ -38,6 +42,7 @@ class Services:
             key = Fernet.generate_key().decode()
         self.env = EnvStore(key)
         self.oauth = None  # DSOAuthProvider when OAuth is enabled (set by create_app)
+        self.sites: SiteManager | None = None   # set by create_app
 
     def authenticate(self, db: Session, token: str | None, client_ip: str,
                      resource_path: str | None = None) -> User:
@@ -92,7 +97,8 @@ class Services:
         st = self.settings
         defaults = {"max_cpus": st.default_max_cpus, "max_mem_mb": st.default_max_mem_mb,
                     "max_run_seconds": st.default_max_run_seconds,
-                    "max_concurrent_jobs": st.default_max_concurrent_jobs}
+                    "max_concurrent_jobs": st.default_max_concurrent_jobs,
+                    "max_sites": st.default_max_sites}
         defaults.update({k: v for k, v in limits.items() if v is not None})
         u = User(name=name, role=role, **defaults)
         db.add(u)
@@ -139,6 +145,36 @@ class Services:
         return {"user": UserOut.model_validate(self.get_user(db, user_id)).model_dump(mode="json"),
                 "killed_job_ids": list(active)}
 
+    def delete_user(self, db: Session, admin: User, user_id: int) -> dict:
+        """Delete an account: kill its running jobs, delete its sites (containers and files),
+        saved variables and tokens. The row stays (renamed, disabled, hidden) so job and ledger
+        history keep their owner; the name becomes free again."""
+        self.require_admin(admin)
+        u = self.get_user(db, user_id)
+        if u.id == admin.id:
+            raise ServiceError(400, "admins cannot delete themselves")
+        if u.deleted_at is not None:
+            raise ServiceError(404, "user not found")
+        name = u.name
+        killed = self.suspend_user(db, admin, user_id)["killed_job_ids"]
+        u = self.get_user(db, user_id)
+        sites = db.scalars(select(Site).where(Site.user_id == u.id)).all()
+        removed = []
+        for site in sites:
+            self._remove_site(db, site)
+            removed.append(site.name)
+        if self.sites is not None:
+            self.sites.files.remove_user(u.id)
+        db.query(UserEnv).filter(UserEnv.user_id == u.id).delete()
+        db.query(Token).filter(Token.user_id == u.id, Token.revoked_at.is_(None)) \
+            .update({Token.revoked_at: utcnow()})
+        u.deleted_at = utcnow()
+        u.active = False
+        u.name = f"{name[:40]}~deleted~{u.id}"
+        db.commit()
+        return {"deleted_user": name, "user_id": u.id, "killed_job_ids": killed,
+                "deleted_sites": removed}
+
     def list_user_jobs(self, db: Session, admin: User, user_id: int | None = None,
                        status: str | None = None, limit: int = 100) -> list[dict]:
         """Read-only job metadata for admins (no command, code, git URL or logs)."""
@@ -153,7 +189,7 @@ class Services:
 
     def list_users(self, db: Session, admin: User) -> list[User]:
         self.require_admin(admin)
-        return db.scalars(select(User).order_by(User.id)).all()
+        return db.scalars(select(User).where(User.deleted_at.is_(None)).order_by(User.id)).all()
 
     def issue_token(self, db: Session, admin: User, user_id: int, name: str):
         self.require_admin(admin)
@@ -234,7 +270,159 @@ class Services:
                 "available_hours": hours(available_uh(db, user.id)),
                 "limits": UserOut.model_validate(user).model_dump(
                     include={"max_cpus", "max_mem_mb", "max_run_seconds",
-                             "max_concurrent_jobs", "allow_network"})}
+                             "max_concurrent_jobs", "allow_network", "max_sites"})}
+
+    # ----- static web sites (the caller's own) -----
+    def site_url(self, user_name: str, site_name: str) -> str:
+        return f"{self.settings.sites_base}/sites/{quote(user_name, safe='')}/{site_name}/"
+
+    def _site_out(self, site: Site, user_name: str) -> dict:
+        return {"site": site.name, "url": self.site_url(user_name, site.name),
+                "published": site.published, "awake": site.container_id is not None,
+                "file_count": site.file_count, "bytes_stored": site.bytes_stored,
+                "requests": site.requests, "bytes_served": site.bytes_served,
+                "wake_count": site.wake_count,
+                "awake_hours": round(self._awake_seconds(site) / 3600, 4),
+                "cost_hours": hours(site.cost_uh or 0),
+                "last_access_at": site.last_access_at, "created_at": site.created_at,
+                "updated_at": site.updated_at, "published_at": site.published_at}
+
+    @staticmethod
+    def _awake_seconds(site: Site) -> float:
+        extra = (utcnow() - site.awake_since).total_seconds() if site.awake_since else 0.0
+        return (site.awake_seconds or 0.0) + max(extra, 0.0)
+
+    def _sites_mgr(self) -> SiteManager:
+        if self.sites is None:
+            raise ServiceError(503, "static sites are not enabled on this server")
+        return self.sites
+
+    def _get_site(self, db: Session, user: User, name: str) -> Site:
+        try:
+            check_site_name(name)
+        except SiteError as e:
+            raise ServiceError(e.status, e.message)
+        site = db.scalar(select(Site).where(Site.user_id == user.id, Site.name == name))
+        if site is None:
+            raise ServiceError(404, f"no site named {name}")
+        return site
+
+    def put_site_file(self, db: Session, user: User, site_name: str, path: str, content: str,
+                      encoding: str = "utf-8") -> dict:
+        mgr, st = self._sites_mgr(), self.settings
+        try:
+            check_site_name(site_name)
+            rel = clean_path(path)
+        except SiteError as e:
+            raise ServiceError(e.status, e.message)
+        if encoding == "utf-8":
+            data = (content or "").encode("utf-8")
+        elif encoding == "base64":
+            try:
+                data = base64.b64decode(content or "", validate=True)
+            except (binascii.Error, ValueError):
+                raise ServiceError(400, "content is not valid base64")
+        else:
+            raise ServiceError(400, "encoding must be 'utf-8' or 'base64'")
+        if len(data) > st.site_max_file_bytes:
+            raise ServiceError(413, f"file too large (max {st.site_max_file_bytes // 2**20} MB)")
+        site = db.scalar(select(Site).where(Site.user_id == user.id, Site.name == site_name))
+        if site is None:
+            count = db.scalar(select(func.count()).select_from(Site).where(Site.user_id == user.id))
+            if count >= user.max_sites:
+                raise ServiceError(403, f"site limit reached ({user.max_sites}); delete one first")
+            site = Site(user_id=user.id, name=site_name)
+            db.add(site)
+            try:
+                db.flush()
+            except IntegrityError:
+                db.rollback()
+                raise ServiceError(409, "site is being created by another request; retry")
+        old = mgr.files.file_size(user.id, site_name, rel)
+        if site.bytes_stored - old + len(data) > st.site_max_bytes:
+            raise ServiceError(413, f"site too large (max {st.site_max_bytes // 2**20} MB)")
+        if not old and site.file_count + 1 > st.site_max_files:
+            raise ServiceError(413, f"too many files in the site (max {st.site_max_files})")
+        try:
+            mgr.files.write(user.id, site_name, rel, data)
+        except SiteError as e:
+            db.rollback()
+            raise ServiceError(e.status, e.message)
+        site.file_count, site.bytes_stored = mgr.files.usage(user.id, site_name)
+        site.updated_at = utcnow()
+        db.commit()
+        return {"site": site_name, "path": rel, "bytes": len(data),
+                "site_files": site.file_count, "site_bytes": site.bytes_stored,
+                "published": site.published,
+                "url": self.site_url(user.name, site_name) if site.published else None}
+
+    def delete_site_file(self, db: Session, user: User, site_name: str, path: str) -> dict:
+        mgr = self._sites_mgr()
+        site = self._get_site(db, user, site_name)
+        try:
+            gone = mgr.files.delete_file(user.id, site.name, path)
+        except SiteError as e:
+            raise ServiceError(e.status, e.message)
+        if not gone:
+            raise ServiceError(404, f"no file {path} in site {site_name}")
+        site.file_count, site.bytes_stored = mgr.files.usage(user.id, site.name)
+        site.updated_at = utcnow()
+        db.commit()
+        return {"site": site.name, "path": path, "deleted": True}
+
+    def list_site_files(self, db: Session, user: User, site_name: str) -> list[dict]:
+        site = self._get_site(db, user, site_name)
+        return self._sites_mgr().files.list(user.id, site.name)
+
+    def publish_site(self, db: Session, user: User, site_name: str, published: bool = True) -> dict:
+        self._sites_mgr()
+        site = self._get_site(db, user, site_name)
+        if published and site.file_count == 0:
+            raise ServiceError(400, "the site has no files; upload some with put_site_file first")
+        site.published = published
+        if published and site.published_at is None:
+            site.published_at = utcnow()
+        db.commit()
+        out = self._site_out(site, user.name)
+        if published and not self.sites.files.site_dir(user.id, site.name).joinpath("index.html").is_file():
+            out["warning"] = "no index.html at the site root; the URL itself will answer 404"
+        if not published and site.container_id:
+            self.sites.sleep(site.id, "unpublished")
+        return out
+
+    def list_sites(self, db: Session, user: User) -> list[dict]:
+        if self.sites is not None:
+            self.sites.flush()
+        return [self._site_out(s, user.name) for s in
+                db.scalars(select(Site).where(Site.user_id == user.id).order_by(Site.id))]
+
+    def _remove_site(self, db: Session, site: Site):
+        mgr = self._sites_mgr()
+        mgr.sleep(site.id, "deleted")
+        mgr.files.remove(site.user_id, site.name)
+        db.refresh(site)
+        db.delete(site)
+
+    def delete_site(self, db: Session, user: User, site_name: str) -> dict:
+        site = self._get_site(db, user, site_name)
+        self._remove_site(db, site)
+        db.commit()
+        return {"site": site_name, "deleted": True}
+
+    def admin_sites(self, db: Session, admin: User, user_id: int | None = None) -> list[dict]:
+        """Every user's sites with their container state and usage (no file contents)."""
+        self.require_admin(admin)
+        if self.sites is not None:
+            self.sites.flush()
+        q = select(Site, User).join(User, User.id == Site.user_id).order_by(User.id, Site.id)
+        if user_id is not None:
+            q = q.where(Site.user_id == user_id)
+        out = []
+        for site, u in db.execute(q).all():
+            row = {"user_id": u.id, "user": u.name, "container": f"fc-site-{site.id}",
+                   **self._site_out(site, u.name)}
+            out.append(row)
+        return out
 
     # ----- the caller's own environment variables -----
     def list_env(self, db: Session, user: User, reveal: bool = False) -> list[dict]:

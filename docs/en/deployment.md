@@ -34,7 +34,7 @@ cp .env.example .env && chmod 600 .env        # then edit .env
 sudo sh deploy/install-service.sh             # systemd unit (only the unit file goes to /etc)
 ```
 
-The service user needs access to Docker only if local execution is used (`docker` group).
+The service user needs access to the local Docker (`docker` group): static-site containers run on the bridge, and local job execution needs it too.
 
 ### Configuration — `server/.env`
 
@@ -65,6 +65,30 @@ the log shows `config file: …/.env (loaded)`. Template with every key: `server
 | `DOCKERSERVER_NODE_INFO_TTL` / `_NODE_POLL_INTERVAL` | 5 / 2 | capacity cache / status poll (s) |
 
 Apply changes: `sudo systemctl restart dockerserver`.
+
+### Static sites
+
+Site files live on the bridge in `server/data/sites/u<user id>/<site>/`. Each site is served by a
+small `nginx:alpine` container on the bridge's own Docker (`fc-site-<id>`: read-only root, uid 101,
+no capabilities, 32 MB, 0.25 CPU, the site directory mounted read-only) on the internal network
+`fc-sites` (`internal`, inter-container traffic off): no internet, only the server process can reach
+it. A request to `/sites/...` starts the container if needed and is proxied to it; after an idle
+hour it is stopped. So the service user needs access to the bridge's Docker (`docker` group). The
+first use pulls `nginx:alpine`.
+
+User pages must not share an origin with `/ui` and `/admin-ui` (their JS could read same-origin
+tokens), so sites get a host of their own: `DOCKERSERVER_SITES_URL`. That host serves only
+`/sites/...`; `/sites/...` on any other host redirects (307) there.
+
+| Setting | Default | |
+|---|---|---|
+| `DOCKERSERVER_SITES_URL` | empty (= `PUBLIC_URL`, not recommended) | public base of the sites, e.g. `https://sites-18-171-232-21.sslip.io` |
+| `DOCKERSERVER_SITE_IDLE_SECONDS` | 3600 | stop a container after this many seconds without requests |
+| `DOCKERSERVER_SITE_MAX_AWAKE` | 20 | containers awake at once (least recently used are stopped first) |
+| `DOCKERSERVER_SITE_MAX_FILE_BYTES` / `_MAX_BYTES` / `_MAX_FILES` | 5 MB / 50 MB / 1000 | per file / per site / files per site |
+| `DOCKERSERVER_DEFAULT_MAX_SITES` | 3 | sites per new user |
+| `DOCKERSERVER_SITE_CREDIT_PER_HOUR` | 0 | credit-hours charged per awake hour (0 = free; usage still recorded) |
+| `DOCKERSERVER_SITE_IMAGE` / `_NETWORK` | `nginx:alpine` / `fc-sites` | image / Docker network |
 
 ### Compute nodes on the bridge
 
@@ -133,6 +157,11 @@ desktop user). Node API: see `node/README.md`.
 - DNS: the domain is proxied by Cloudflare. The Caddyfile trusts Cloudflare's IP ranges and takes
   the visitor IP from `CF-Connecting-IP` (needed for the per-IP auth-failure limit). If the
   Cloudflare proxy is turned off, point the A record at the bridge's public IP and remove those lines.
+- The sites host (`DOCKERSERVER_SITES_URL`) has its own block in the Caddyfile that forwards only
+  `/sites/*`; Caddy gets its certificate automatically. The default uses sslip.io
+  (`sites-<ip-with-dashes>.sslip.io`, no DNS needed); if the public IP changes, update the Caddyfile and
+  `.env`. To use your own name (e.g. `sites.llmfreedomforge.com`): add an A record (Cloudflare proxy is
+  fine), change the Caddyfile site name and `DOCKERSERVER_SITES_URL`, reload Caddy, restart the service.
 - AWS security group: inbound TCP 80 and 443 only.
 
 ## Operations

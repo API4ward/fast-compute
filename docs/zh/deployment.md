@@ -33,7 +33,7 @@ cp .env.example .env && chmod 600 .env        # 然后编辑 .env
 sudo sh deploy/install-service.sh             # systemd 服务（只有 unit 文件放到 /etc）
 ```
 
-只有使用本机执行时，服务用户才需要访问 Docker（`docker` 组）。
+服务用户需要访问本机 Docker（`docker` 组）：静态站点的容器运行在网关上；使用本机执行任务时也需要。
 
 ### 配置：`server/.env`
 
@@ -64,6 +64,27 @@ sudo sh deploy/install-service.sh             # systemd 服务（只有 unit 文
 | `DOCKERSERVER_NODE_INFO_TTL` / `_NODE_POLL_INTERVAL` | 5 / 2 | 容量缓存 / 状态轮询（秒） |
 
 修改后执行：`sudo systemctl restart dockerserver`。
+
+### 静态站点
+
+站点文件保存在网关本机 `server/data/sites/u<用户id>/<站点>/`，每个站点在网关的 Docker 上由一个
+`nginx:alpine` 小容器提供（`fc-site-<id>`：只读根文件系统、uid 101、无任何 capability、32 MB、0.25 CPU、
+站点目录只读挂载）。容器在内部网络 `fc-sites` 上（`internal`、禁止容器互访），没有外网，只有网关进程能
+连到它。访问 `/sites/...` 时网关按需启动容器并转发；空闲 1 小时后停止。因此服务用户需要能访问网关本机的
+Docker（`docker` 组）。第一次使用会拉取 `nginx:alpine` 镜像。
+
+用户的页面必须和 `/ui`、`/admin-ui` 不同源（否则页面里的 JS 能读到同源的令牌），所以站点用单独的域名：
+`DOCKERSERVER_SITES_URL`。该域名只提供 `/sites/...`，其他域名上的 `/sites/...` 会 307 跳转过去。
+
+| 配置项 | 默认值 | |
+|---|---|---|
+| `DOCKERSERVER_SITES_URL` | 空（= `PUBLIC_URL`，不推荐） | 站点的公开根地址，例如 `https://sites-18-171-232-21.sslip.io` |
+| `DOCKERSERVER_SITE_IDLE_SECONDS` | 3600 | 多少秒无访问后停止容器 |
+| `DOCKERSERVER_SITE_MAX_AWAKE` | 20 | 同时唤醒的容器上限（超出时停掉最久未访问的） |
+| `DOCKERSERVER_SITE_MAX_FILE_BYTES` / `_MAX_BYTES` / `_MAX_FILES` | 5 MB / 50 MB / 1000 | 单文件 / 单站点 / 文件数上限 |
+| `DOCKERSERVER_DEFAULT_MAX_SITES` | 3 | 新用户的站点数上限 |
+| `DOCKERSERVER_SITE_CREDIT_PER_HOUR` | 0 | 容器每唤醒 1 小时扣多少算力时（0 = 不收费，仍记录用量） |
+| `DOCKERSERVER_SITE_IMAGE` / `_NETWORK` | `nginx:alpine` / `fc-sites` | 镜像 / Docker 网络 |
 
 ### 在网关上配置计算节点
 
@@ -130,6 +151,10 @@ cd node
 - DNS：域名经过 Cloudflare 代理。Caddyfile 信任 Cloudflare 的 IP 段，从 `CF-Connecting-IP` 取
   访客真实 IP（按 IP 限制认证失败需要用到）。如果关闭 Cloudflare 代理，请把 A 记录指向网关公网
   IP，并删掉这几行。
+- 站点域名（`DOCKERSERVER_SITES_URL`）在 Caddyfile 中有单独的一段，只转发 `/sites/*`；Caddy 自动申请证书。
+  默认用 sslip.io（`sites-<IP 用横线>.sslip.io`，无需配置 DNS）；公网 IP 变化后要同时改 Caddyfile 和 `.env`。
+  想换成自己的域名（如 `sites.llmfreedomforge.com`）：添加 A 记录（可走 Cloudflare 代理），改 Caddyfile 的站点名和
+  `DOCKERSERVER_SITES_URL`，然后重载 Caddy、重启服务。
 - AWS 安全组：入站只开放 TCP 80 和 443。
 
 ## 运维

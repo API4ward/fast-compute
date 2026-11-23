@@ -37,3 +37,26 @@ compute.llmfreedomforge.com, compute-18-171-232-21.sslip.io {
 		}
 	}
 }
+
+# User static sites (DOCKERSERVER_SITES_URL). A host of its own so user pages never share an origin
+# with /ui and /admin-ui. Only /sites/* is forwarded; DockerServer wakes the site's nginx container.
+# No CSP here on purpose: pages may load external fonts / CDNs.
+# sslip.io resolves sites-18-171-232-21.sslip.io to 18.171.232.21 (no DNS record needed); change both
+# this name and DOCKERSERVER_SITES_URL if the public IP or the domain changes.
+sites-18-171-232-21.sslip.io {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+	handle /sites/* {
+		reverse_proxy 127.0.0.1:8800 {
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+	handle {
+		respond "fast-compute sites" 404
+	}
+}

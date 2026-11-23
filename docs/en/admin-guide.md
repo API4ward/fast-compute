@@ -25,6 +25,10 @@ Sign in with an admin token (kept only in that browser tab).
   user's ledger (top-ups, adjustments, job charges, balance after each).
 - **Jobs**: read-only list across users (filter by status).
 - **Usage**: per-user jobs, run time, CPU-hours, GB-hours and cost for a date range.
+- **Sites**: site containers per user (sites, awake containers, storage, requests, bytes served,
+  awake hours, cost) and every site in detail (container `fc-site-<id>`, awake/asleep, files, last
+  visit). Read-only; file contents are not shown. A user's page also lists their sites and has a
+  **Delete user** button.
 
 ## Disable vs. suspend
 
@@ -35,6 +39,12 @@ Sign in with an admin token (kept only in that browser tab).
 | Enable (`set_user_status active=true`, `POST /admin/users/{id}/enable`) | work again | allowed | — |
 
 Admins cannot disable or suspend themselves.
+
+**Delete user** (`delete_user`, `DELETE /admin/users/{id}`; the web page asks you to type the name):
+kills the user's running jobs, stops and removes all their site containers and site files, deletes
+their saved variables and revokes all tokens. Jobs and ledger entries are kept for accounting; the
+user disappears from the list and the name can be reused. **Cannot be undone.** Admins cannot
+delete themselves.
 
 ## Admin MCP — `/mcp-admin` (admin tokens only; others get 403)
 
@@ -60,6 +70,8 @@ works only on `/mcp-admin`.
 | `usage_report` | `start?`, `end?` (UTC) |
 | `issue_token` | `user_id`, `name` → new token (shown once) |
 | `revoke_token` | `token_id` |
+| `delete_user` | `user_id` → killed jobs, deleted sites |
+| `list_sites` | `user_id?` → every site's container state and usage (no file contents) |
 
 ## Admin REST API
 
@@ -75,6 +87,8 @@ works only on `/mcp-admin`.
 | GET | `/admin/users/{id}/ledger?limit=` | ledger |
 | GET | `/admin/jobs?user_id=&status=&limit=` | job metadata (no command, code or logs) |
 | GET | `/admin/usage?start=&end=` | usage report |
+| GET | `/admin/sites?user_id=` | sites, container state and usage |
+| DELETE | `/admin/users/{id}` | delete a user with their sites and containers |
 
 ```bash
 export DS=https://compute.llmfreedomforge.com ADMIN=ds_ADMIN_TOKEN
@@ -96,6 +110,8 @@ curl -s -H "Authorization: Bearer $ADMIN" "$DS/admin/usage?start=2026-11-01T00:0
   (600), `_MAX_CONCURRENT_JOBS` (2). Changing defaults does not affect existing users.
 - A job larger than every compute node is rejected even if the user's limits allow it.
 - Network needs both the user's `allow_network` and `COMPUTENODE_ALLOW_NETWORK=true` on the node.
+- Sites: at most `max_sites` per user (new users get `DOCKERSERVER_DEFAULT_MAX_SITES` = 3; 0 = no
+  sites); change it on the user's page or with `set_user_limits`. Other site settings: see deployment.
 
 ## CLI (on the server, in `server/`)
 

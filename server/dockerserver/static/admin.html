@@ -25,6 +25,7 @@
       <button data-tab="users" class="active">Users</button>
       <button data-tab="jobs">Jobs</button>
       <button data-tab="usage">Usage</button>
+      <button data-tab="sites">Sites</button>
     </nav>
     <span class="who" id="who"></span>
     <button class="btn" id="logout">Sign out</button>
@@ -42,6 +43,7 @@
           <label>Max run s <input name="max_run_seconds" type="number" min="1" value="600"></label>
           <label>Concurrent <input name="max_concurrent_jobs" type="number" min="1" value="2"></label>
           <label>Network <select name="allow_network"><option value="false">no</option><option value="true">yes</option></select></label>
+          <label>Max sites <input name="max_sites" type="number" min="0" value="3"></label>
           <button class="btn primary" type="submit">Create</button>
         </form>
         <div id="new-token"></div>
@@ -79,6 +81,20 @@
         <p class="muted">Jobs counted by start time. Cost in credit-hours (1 h = 1 CPU + 256 MB for 1 hour).</p>
         <div id="usage"></div>
       </div>
+    </section>
+    <!-- SITES -->
+    <section data-tab="sites" class="hidden">
+      <div class="panel">
+        <div class="row" style="margin-bottom:12px">
+          <h2 style="margin:0">Site containers per user</h2>
+          <button class="btn" id="sites-refresh">Refresh</button>
+        </div>
+        <p class="muted">Each static site runs in its own small nginx container (32 MB, 0.25 CPU) that
+          starts on the first visit and is stopped after an idle hour. Admins see metadata and usage
+          only; deleting a user removes their sites and containers.</p>
+        <div id="sites-summary"></div>
+      </div>
+      <div class="panel"><h2>All sites</h2><div id="sites"></div></div>
     </section>
   </main>
 </div>
@@ -125,6 +141,7 @@ async function openUser(id) {
     el("label", {}, "Max MB", num("max_mem_mb", "32", u.max_mem_mb)),
     el("label", {}, "Max run s", num("max_run_seconds", "1", u.max_run_seconds)),
     el("label", {}, "Concurrent", num("max_concurrent_jobs", "1", u.max_concurrent_jobs)),
+    el("label", {}, "Max sites", num("max_sites", "1", u.max_sites)),
     el("label", {}, "Network", el("select", { name: "allow_network" },
       el("option", { value: "false", selected: !u.allow_network }, "no"),
       el("option", { value: "true", selected: u.allow_network }, "yes"))),
@@ -139,7 +156,7 @@ async function openUser(id) {
       await api(`/admin/users/${id}`, { method: "PATCH", body: {
         max_cpus: +f.get("max_cpus"), max_mem_mb: +f.get("max_mem_mb"), max_run_seconds: +f.get("max_run_seconds"),
         max_concurrent_jobs: +f.get("max_concurrent_jobs"), allow_network: f.get("allow_network") === "true",
-        role: f.get("role") } });
+        max_sites: +f.get("max_sites"), role: f.get("role") } });
       showMsg(box, "Saved.", true); loadUsers();
     } catch (e) { showMsg(box, e.message); }
   });
@@ -175,6 +192,20 @@ async function openUser(id) {
     } catch (e) { showMsg(box, e.message); suspend.disabled = false; }
   } }, "Suspend (kill all jobs)");
 
+  const del = el("button", { class: "btn danger", onclick: async () => {
+    if (!confirm(`Delete ${u.name}? This kills their running jobs and permanently deletes their sites ` +
+                 `(containers and files), saved variables and tokens. Job and credit history is kept.`)) return;
+    if (prompt(`Type the user name (${u.name}) to confirm`) !== u.name) return;
+    del.disabled = true;
+    try {
+      const r = await api(`/admin/users/${id}`, { method: "DELETE" });
+      box.classList.add("hidden");
+      showMsg($("users"), `Deleted ${r.deleted_user}: ${r.killed_job_ids.length} job(s) killed, ` +
+        `${r.deleted_sites.length} site(s) removed.`, true);
+      loadUsers();
+    } catch (e) { showMsg(box, e.message); del.disabled = false; }
+  } }, "Delete user");
+
   const tokenOut = el("div");
   const newTok = el("button", { class: "btn", onclick: async () => {
     try {
@@ -184,7 +215,7 @@ async function openUser(id) {
     } catch (e) { showMsg(box, e.message); }
   } }, "Issue new token");
 
-  const tokensBox = el("div"), ledgerBox = el("div"), jobsBox = el("div");
+  const tokensBox = el("div"), ledgerBox = el("div"), jobsBox = el("div"), sitesBox = el("div");
   async function loadTokens() {
     const toks = await api(`/admin/users/${id}/tokens`);
     clear(tokensBox).append(table(["ID", "Name", "Prefix", "Created", "Last used", "Status", ""],
@@ -205,7 +236,8 @@ async function openUser(id) {
       el("div", { class: "stat" }, el("div", { class: "v" }, u.active ? "active" : "disabled"), el("div", { class: "k" }, "status"))),
     el("h3", {}, "Limits"), limitsForm,
     el("h3", {}, "Credits"), creditForm,
-    el("h3", {}, "Access"), el("div", { class: "row" }, toggle, suspend, newTok), tokenOut, tokensBox,
+    el("h3", {}, "Access"), el("div", { class: "row" }, toggle, suspend, newTok, del), tokenOut, tokensBox,
+    el("h3", {}, "Sites (containers)"), sitesBox,
     el("h3", {}, "Ledger"), ledgerBox,
     el("h3", {}, "Recent jobs"), jobsBox);
 
@@ -215,6 +247,8 @@ async function openUser(id) {
     rows.map(r => el("tr", {}, td(fmtTime(r.created_at)), td(r.reason), td(fmtH(r.delta_hours, 6), "num"),
       td(fmtH(r.balance_after_hours, 4), "num"), td(r.job_id ?? ""), td(r.admin_id ? (userNames[r.admin_id] || r.admin_id) : ""),
       td(r.note || "", "wrap")))) : el("p", { class: "muted" }, "No entries."))).catch(e => showMsg(box, e.message));
+  api(`/admin/sites?user_id=${id}`).then(s => clear(sitesBox).append(sitesTable(s, { showUser: false })))
+    .catch(e => showMsg(box, e.message));
   api(`/admin/jobs?user_id=${id}&limit=20`).then(jobs => clear(jobsBox).append(adminJobsTable(jobs)))
     .catch(e => showMsg(box, e.message));
   box.scrollIntoView({ behavior: "smooth" });
@@ -247,6 +281,50 @@ async function loadUsage(ev) {
   } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
 }
 
+function fmtBytes(b) {
+  if (b == null) return "–";
+  if (b < 1024) return b + " B";
+  if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
+  if (b < 1073741824) return (b / 1048576).toFixed(1) + " MB";
+  return (b / 1073741824).toFixed(2) + " GB";
+}
+
+function sitesTable(sites, { showUser = true } = {}) {
+  if (!sites.length) return el("p", { class: "muted" }, "No sites.");
+  return table((showUser ? ["User"] : []).concat(["Site", "Container", "Published", { label: "Files", num: true },
+    { label: "Size", num: true }, { label: "Requests", num: true }, { label: "Served", num: true },
+    { label: "Wake-ups", num: true }, { label: "Awake h", num: true }, { label: "Cost h", num: true }, "Last visit"]),
+    sites.map(s => el("tr", {},
+      showUser ? td(s.user) : null,
+      td(s.published ? el("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.site) : s.site),
+      td(el("span", {}, el("span", { class: "badge " + (s.awake ? "s-running" : "s-stopped") }, s.awake ? "awake" : "asleep"),
+         " ", el("span", { class: "muted" }, s.container))),
+      td(s.published ? "yes" : "no"), td(s.file_count, "num"), td(fmtBytes(s.bytes_stored), "num"),
+      td(s.requests, "num"), td(fmtBytes(s.bytes_served), "num"), td(s.wake_count, "num"),
+      td(fmtH(s.awake_hours, 2), "num"), td(fmtH(s.cost_hours, 3), "num"), td(fmtTime(s.last_access_at)))));
+}
+
+async function loadSites() {
+  const box = $("sites"), sum = $("sites-summary");
+  try {
+    const sites = await api("/admin/sites");
+    const by = {};
+    for (const s of sites) {
+      const u = by[s.user] || (by[s.user] = { sites: 0, awake: 0, bytes: 0, requests: 0, served: 0, hours: 0, cost: 0 });
+      u.sites++; u.awake += s.awake ? 1 : 0; u.bytes += s.bytes_stored; u.requests += s.requests;
+      u.served += s.bytes_served; u.hours += s.awake_hours; u.cost += s.cost_hours;
+    }
+    const names = Object.keys(by).sort();
+    clear(sum).append(names.length ? table(["User", { label: "Sites", num: true }, { label: "Awake containers", num: true },
+      { label: "Storage", num: true }, { label: "Requests", num: true }, { label: "Served", num: true },
+      { label: "Awake h", num: true }, { label: "Cost h", num: true }],
+      names.map(n => { const u = by[n]; return el("tr", {}, td(n), td(u.sites, "num"), td(u.awake, "num"),
+        td(fmtBytes(u.bytes), "num"), td(u.requests, "num"), td(fmtBytes(u.served), "num"),
+        td(fmtH(u.hours, 2), "num"), td(fmtH(u.cost, 3), "num")); })) : el("p", { class: "muted" }, "No sites yet."));
+    clear(box).append(sitesTable(sites));
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+}
+
 function selectTab(name) { document.querySelector(`nav button[data-tab="${name}"]`).click(); }
 
 $("create-form").addEventListener("submit", async ev => {
@@ -257,7 +335,7 @@ $("create-form").addEventListener("submit", async ev => {
     const u = await api("/admin/users", { method: "POST", body: {
       name: f.get("name"), role: f.get("role"), max_cpus: +f.get("max_cpus"), max_mem_mb: +f.get("max_mem_mb"),
       max_run_seconds: +f.get("max_run_seconds"), max_concurrent_jobs: +f.get("max_concurrent_jobs"),
-      allow_network: f.get("allow_network") === "true" } });
+      allow_network: f.get("allow_network") === "true", max_sites: +f.get("max_sites") } });
     out.append(el("p", {}, `Created ${u.name}. Token (shown once — copy it now):`), el("div", { class: "token" }, u.token));
     ev.target.reset(); loadUsers();
   } catch (e) { showMsg(out, e.message); }
@@ -265,8 +343,9 @@ $("create-form").addEventListener("submit", async ev => {
 $("jobs-refresh").addEventListener("click", loadJobs);
 $("job-status").addEventListener("change", loadJobs);
 $("usage-form").addEventListener("submit", loadUsage);
+$("sites-refresh").addEventListener("click", loadSites);
 
-setupTabs(tab => { if (tab === "jobs") loadJobs(); if (tab === "usage") loadUsage(); if (tab === "users") loadUsers(); });
+setupTabs(tab => { if (tab === "jobs") loadJobs(); if (tab === "usage") loadUsage(); if (tab === "users") loadUsers(); if (tab === "sites") loadSites(); });
 initLogin({ requireAdmin: true, onReady: () => loadUsers() });
 </script>
 </body>
