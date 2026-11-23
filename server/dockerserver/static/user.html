@@ -15,17 +15,24 @@
     <button class="btn primary" type="submit">Sign in</button>
     <p id="login-err" class="muted"></p>
     <p class="muted">The token is kept in this tab's session storage only.</p>
+    <p><a href="/welcome">New here? How to connect and use fast-compute →</a></p>
   </form>
 </div>
 
 <div id="app" class="hidden">
   <header>
     <h1>DockerServer</h1>
+    <nav>
+      <button data-tab="welcome">Welcome</button>
+      <button data-tab="dashboard">Dashboard</button>
+    </nav>
     <span class="who" id="who"></span>
     <button class="btn" id="refresh">Refresh</button>
     <button class="btn" id="logout">Sign out</button>
   </header>
   <main>
+  <section data-tab="welcome" class="hidden" id="welcome"></section>
+  <section data-tab="dashboard">
     <div class="panel">
       <div class="stats" id="stats"></div>
       <p class="muted" id="limits"></p>
@@ -45,10 +52,12 @@
     </div>
     <div class="panel hidden" id="job-detail"></div>
     <div class="panel"><h2>Usage per day</h2><div id="per-day"></div></div>
+  </section>
   </main>
 </div>
 
 <script src="/static/common.js"></script>
+<script src="/static/welcome.js"></script>
 <script>
 async function load() {
   try {
@@ -94,7 +103,20 @@ $("env-form").addEventListener("submit", async ev => {
   } catch (e) { showMsg($("env"), e.message); }
 });
 $("refresh").addEventListener("click", load);
-initLogin({ requireAdmin: false, onReady: () => { load(); loadEnv(); } });
+const TAB_KEY = "fastcompute_ui_tab";
+function showTab(name) {
+  document.querySelector(`nav button[data-tab="${name}"]`).click();
+}
+setupTabs(tab => { try { localStorage.setItem(TAB_KEY, tab); } catch {} });
+initLogin({ requireAdmin: false, onReady: async (me) => {
+  renderWelcome($("welcome"), { me });
+  load(); loadEnv();
+  // First visit (no saved choice and no jobs yet): open on Welcome; otherwise where the user left off.
+  let saved = null;
+  try { saved = localStorage.getItem(TAB_KEY); } catch {}
+  if (saved === "welcome" || saved === "dashboard") return showTab(saved);
+  try { showTab((await api("/jobs?limit=1")).length ? "dashboard" : "welcome"); } catch { showTab("dashboard"); }
+} });
 </script>
 </body>
 </html>
