@@ -180,6 +180,13 @@ class Settings:
     # How often idle sites are checked and usage counters are written to the database.
     site_reap_interval: float = field(default_factory=lambda: float(_env("SITE_REAP_INTERVAL", "30")))
 
+    # ---- Caddy config management (caddy.py; admin UI "Caddy" tab) ----
+    caddy_manage: bool = field(default_factory=lambda: _bool("CADDY_MANAGE", True))
+    # The Caddyfile Caddy actually uses (/etc/caddy/Caddyfile only imports it).
+    caddyfile: Path = field(default_factory=lambda: (PROJECT_DIR / _env("CADDYFILE", "deploy/Caddyfile")).resolve())
+    # Caddy's local admin API (loopback only).
+    caddy_admin: str = field(default_factory=lambda: _env("CADDY_ADMIN", "http://127.0.0.1:2019"))
+
     @property
     def sites_base(self) -> str:
         return self.sites_url or self.public_url

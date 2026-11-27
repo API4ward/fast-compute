@@ -147,7 +147,11 @@ cd node
 - 站点配置在项目里：`server/deploy/Caddyfile`。`/etc/caddy/Caddyfile` 只有一行
   `import <路径>/deploy/Caddyfile`；由 `sudo sh deploy/install-caddy.sh` 设置（需要时从官方 apt 源
   安装 Caddy，并把 `caddy` 用户加入属主所在组以便读取）。
-- 修改后：`sudo systemctl reload caddy`。
+- 在 `/admin-ui` → **Caddy** 里编辑（检查、应用、备份；通过 Caddy 本机管理接口 `127.0.0.1:2019`，无需 sudo）。
+  手工修改文件后，用 `sudo systemctl reload caddy` 或管理页面的 **Load file into Caddy** 生效。
+  配置项：`DOCKERSERVER_CADDYFILE`（默认 `deploy/Caddyfile`）、`DOCKERSERVER_CADDY_ADMIN`
+  （默认 `http://127.0.0.1:2019`，只能是本机地址）、`DOCKERSERVER_CADDY_MANAGE=false` 关闭此功能。
+  在页面上做的修改会让 git 工作区里的 `deploy/Caddyfile` 变为已修改，`git pull` 前请先提交（或 `git stash`）。
 - DNS：域名经过 Cloudflare 代理。Caddyfile 信任 Cloudflare 的 IP 段，从 `CF-Connecting-IP` 取
   访客真实 IP（按 IP 限制认证失败需要用到）。如果关闭 Cloudflare 代理，请把 A 记录指向网关公网
   IP，并删掉这几行。

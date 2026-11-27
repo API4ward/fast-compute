@@ -21,7 +21,8 @@ from .config import Settings, load_settings
 from .billing import grant_missing_initial
 from .models import Site, Token, User, make_session_factory
 from .runner import JobRunner
-from .schemas import (AdminJobOut, CreditChange, EnvValue, JobOut, LedgerOut, SiteFile, TokenCreate, TokenIssued, TokenOut,
+from .caddy import CaddyError, CaddyManager
+from .schemas import (AdminJobOut, CaddyEdit, CreditChange, EnvValue, JobOut, LedgerOut, SiteFile, TokenCreate, TokenIssued, TokenOut,
                       UserCreate, UserCreated, UserOut, UserUpdate, ledger_out)
 from .services import ServiceError, Services
 from .sites import SiteError, SiteManager
@@ -68,12 +69,14 @@ _SITE_RESP_HEADERS = ("content-type", "etag", "last-modified", "cache-control", 
 # ---------- app factory ----------
 def create_app(settings: Settings | None = None, runner: JobRunner | None = None,
                recover: bool = True, enable_mcp: bool = True, pool=None,
-               site_runtime=None) -> FastAPI:
+               site_runtime=None, caddy_transport=None) -> FastAPI:
     settings = settings or load_settings()
     Session_ = make_session_factory(settings.db_url)
     runner = runner or JobRunner(settings, Session_, pool=pool)
     svc = Services(settings, Session_, runner)
     svc.sites = SiteManager(settings, Session_, runtime=site_runtime)
+    caddy = CaddyManager(settings.caddyfile, settings.caddy_admin, settings.data_dir / "caddy" / "backups",
+                         enabled=settings.caddy_manage, transport=caddy_transport)
     site_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=3.0), trust_env=False)
     with Session_() as db:
         grant_missing_initial(db, settings.default_credit_hours)
@@ -98,10 +101,12 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
         finally:
             svc.sites.shutdown()
             await site_http.aclose()
+            caddy.close()
 
     app = FastAPI(title="DockerServer", version=__version__, lifespan=lifespan)
     app.state.settings, app.state.Session, app.state.runner = settings, Session_, runner
     app.state.services = svc
+    app.state.caddy = caddy
     if settings.oauth_enabled:
         from .oauth import DSOAuthProvider, HostCheck, build_oauth_routes
         svc.oauth = DSOAuthProvider(svc)
@@ -114,6 +119,10 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     for path, (_, asgi) in mcp_routes.items():
         # Exact-path routes (no /mcp -> /mcp/ redirect); the MCP apps handle their own auth.
         app.router.routes.append(Route(path, endpoint=asgi))
+
+    @app.exception_handler(CaddyError)
+    async def _caddy_error(_req, exc: CaddyError):
+        return JSONResponse({"detail": exc.message}, status_code=exc.status)
 
     @app.exception_handler(ServiceError)
     async def _service_error(_req, exc: ServiceError):
@@ -301,6 +310,41 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
                 headers["content-length"] = resp.headers["content-length"]
             return Response(status_code=resp.status_code, headers=headers)
         return Response(body, status_code=resp.status_code, headers=headers)
+
+    # ----- admin: Caddy configuration (caddy.py) -----
+    def _caddy_status():
+        st = caddy.status()
+        allowed = {h.lower() for h in settings.allowed_hosts}
+        for site in st["running_sites"]:
+            # hosts proxied to this app must also be in DOCKERSERVER_ALLOWED_HOSTS (HostCheck)
+            site["allowed_host"] = {h: (h.lower() in allowed or h.lower() == (settings.sites_host or ""))
+                                    for h in site["hosts"] if h != "*"}
+        st["allowed_hosts"] = settings.allowed_hosts
+        return st
+
+    @app.get("/admin/caddy")
+    def caddy_status(_: Admin):
+        return _caddy_status()
+
+    @app.post("/admin/caddy/validate")
+    def caddy_validate(body: CaddyEdit, _: Admin):
+        return caddy.validate(body.content)
+
+    @app.put("/admin/caddy")
+    def caddy_apply(body: CaddyEdit, admin: Admin):
+        return caddy.apply(body.content, body.base_sha256, admin.name)
+
+    @app.post("/admin/caddy/reload")
+    def caddy_reload(admin: Admin):
+        return caddy.reload(admin.name)
+
+    @app.get("/admin/caddy/backups")
+    def caddy_backups(_: Admin):
+        return caddy.list_backups()
+
+    @app.get("/admin/caddy/backups/{name}", response_class=PlainTextResponse)
+    def caddy_backup(name: str, _: Admin):
+        return caddy.get_backup(name)
 
     # ----- admin -----
     @app.get("/admin/sites")

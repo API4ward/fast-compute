@@ -166,3 +166,9 @@ def usage_totals(jobs: list[Job]) -> dict:
 class SiteFile(BaseModel):
     content: str = Field(max_length=8 * 1024 * 1024)
     encoding: Literal["utf-8", "base64"] = "utf-8"
+
+
+class CaddyEdit(BaseModel):
+    content: str = Field(max_length=262144)
+    # sha256 of the Caddyfile the editor was opened on; a mismatch (someone else changed it) -> 409
+    base_sha256: str | None = Field(default=None, max_length=64)
