@@ -10,21 +10,25 @@ from conftest import auth, make_user
 from dockerserver.api import create_app
 from dockerserver.auth import issue_token
 from dockerserver.config import Settings
+from dockerserver.caddy import summarize
 from dockerserver.models import User
 
 ORIGINAL = "old.example.com {\n\treverse_proxy 127.0.0.1:8800\n}\n"
+OTHER = "other.example.com {\n\treverse_proxy 127.0.0.1:7000\n}\n"   # another project's file
 
 
 class FakeCaddy:
     """Minimal stand-in for Caddy's admin API: /adapt, /load, /config/."""
 
-    def __init__(self):
-        self.running = self.adapt(ORIGINAL)
+    def __init__(self, initial=ORIGINAL):
+        self.running = self.adapt(initial)
         self.loads = 0
         self.up = True
 
     @staticmethod
     def adapt(text):
+        # like Caddy: absolute `import <file>` lines are replaced by the file's text
+        text = re.sub(r"^import (/\S+)$", lambda m: open(m.group(1)).read(), text, flags=re.M)
         routes = []
         for m in re.finditer(r"^(\S[^{\n]*)\{\s*\n\s*reverse_proxy (\S+)", text, re.M):
             hosts = [h.strip() for h in m.group(1).split(",") if h.strip()]
@@ -54,11 +58,15 @@ class FakeCaddy:
 
 @pytest.fixture
 def caddy_env(tmp_path):
-    fake = FakeCaddy()
     cf = tmp_path / "Caddyfile"
     cf.write_text(ORIGINAL)
     cf.chmod(0o640)
-    s = Settings(data_dir=tmp_path / "data", caddyfile=cf,
+    other = tmp_path / "other.Caddyfile"
+    other.write_text(OTHER)
+    root = tmp_path / "root.Caddyfile"
+    root.write_text(f"# site config lives in the projects\nimport {cf}\nimport {other}\n")
+    fake = FakeCaddy(ORIGINAL + OTHER)
+    s = Settings(data_dir=tmp_path / "data", caddyfile=cf, caddy_root=root,
                  allowed_hosts=["127.0.0.1:8800", "old.example.com"])
     s.logs_dir.mkdir(parents=True, exist_ok=True)
     app = create_app(s, recover=False, enable_mcp=False, caddy_transport=httpx.MockTransport(fake.handler))
@@ -75,7 +83,8 @@ def test_status_shows_file_and_running_sites(caddy_env):
     c, h, fake, cf, _ = caddy_env
     st = c.get("/admin/caddy", headers=h).json()
     assert st["content"] == ORIGINAL and st["reachable"] and st["in_sync"] is True
-    assert st["running_sites"][0]["hosts"] == ["old.example.com"]
+    assert [x["hosts"] for x in st["running_sites"]] == [["old.example.com"], ["other.example.com"]]
+    assert st["root"]["imports_ours"] and st["root"]["other_imports"] == [str(cf.parent / "other.Caddyfile")]
     assert st["running_sites"][0]["upstreams"] == ["127.0.0.1:8800"]
     assert st["running_sites"][0]["allowed_host"] == {"old.example.com": True}
 
@@ -110,6 +119,8 @@ def test_apply_writes_backs_up_and_rolls_back(caddy_env):
     assert body["applied"] and body["backup"].endswith("-root.Caddyfile")
     assert cf.read_text() == new + "\n" and oct(cf.stat().st_mode & 0o777) == "0o640"
     assert fake.loads == 1
+    # the other project's site is still running
+    assert ["other.example.com"] in [x["hosts"] for x in summarize(fake.running)]
     st = c.get("/admin/caddy", headers=h).json()
     assert st["in_sync"] is True
     assert st["running_sites"][0]["allowed_host"] == {"new.example.com": False, "old.example.com": True}
@@ -177,3 +188,20 @@ def test_admin_api_must_be_loopback():
     from dockerserver.caddy import CaddyManager
     with pytest.raises(SystemExit):
         CaddyManager("/tmp/x", "http://10.0.0.5:2019", "/tmp/b")
+
+
+def test_root_must_import_our_file(caddy_env):
+    c, h, fake, cf, _ = caddy_env
+    root = cf.parent / "root.Caddyfile"
+    root.write_text(f"import {cf.parent / 'other.Caddyfile'}\n")
+    r = c.put("/admin/caddy", headers=h, json={"content": ORIGINAL})
+    assert r.status_code == 409 and "does not import" in r.json()["detail"]
+    assert fake.loads == 0
+    st = c.get("/admin/caddy", headers=h).json()
+    assert st["root"]["imports_ours"] is False and "does not import" in st["error"]
+
+
+def test_relative_import_in_root(caddy_env):
+    c, h, fake, cf, _ = caddy_env
+    (cf.parent / "root.Caddyfile").write_text(f"import Caddyfile\nimport {cf.parent / 'other.Caddyfile'}\n")
+    assert c.get("/admin/caddy", headers=h).json()["in_sync"] is True

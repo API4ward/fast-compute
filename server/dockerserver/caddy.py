@@ -1,7 +1,10 @@
 """Caddy configuration management for the admin UI (/admin-ui -> Caddy tab).
 
-The Caddyfile lives in the project (default: deploy/Caddyfile, which /etc/caddy/Caddyfile only
-imports). Changes go through Caddy's local admin API (default http://127.0.0.1:2019), so no sudo
+The Caddyfile lives in the project (default: deploy/Caddyfile). Caddy itself starts from the root
+file /etc/caddy/Caddyfile, which imports it - and possibly other projects' Caddyfiles too. So every
+validate / apply works on the WHOLE root config: the root file's `import <our file>` line is
+replaced by the edited text and the other imports stay, so sites from other files are never
+dropped. If the root file exists but does not import our file, apply is refused. Changes go through Caddy's local admin API (default http://127.0.0.1:2019), so no sudo
 is needed:
 
   validate  POST /adapt  - parse the Caddyfile and return the JSON it becomes (nothing applied)
@@ -87,8 +90,9 @@ def _caddy_error(r: httpx.Response) -> str:
 
 class CaddyManager:
     def __init__(self, caddyfile: Path, admin_url: str, backup_dir: Path, enabled: bool = True,
-                 transport: httpx.BaseTransport | None = None):
+                 transport: httpx.BaseTransport | None = None, root: Path | None = None):
         self.path = Path(caddyfile)
+        self.root = Path(root) if root else None
         self.admin_url = _loopback_url(admin_url)
         self.backup_dir = Path(backup_dir)
         self.enabled = enabled
@@ -116,7 +120,67 @@ class CaddyManager:
         if "\x00" in content:
             raise CaddyError(400, "Caddyfile contains a NUL byte")
 
+    def root_info(self) -> dict:
+        """How Caddy's root Caddyfile includes ours: {path, found, imports_ours, other_imports}."""
+        info = {"path": str(self.root) if self.root else None, "found": False, "imports_ours": False,
+                "other_imports": [], "error": None}
+        if not self.root:
+            return info
+        try:
+            text = self.root.read_text()
+        except FileNotFoundError:
+            return info
+        except OSError as e:
+            info["error"] = f"cannot read {self.root}: {e}"
+            return info
+        info["found"] = True
+        for line in text.splitlines():
+            target = self._import_target(line)
+            if target is None:
+                continue
+            if target == self.path.resolve():
+                info["imports_ours"] = True
+            else:
+                info["other_imports"].append(line.strip().split(None, 1)[1])
+        return info
+
+    def _import_target(self, line: str) -> Path | None:
+        parts = line.strip().split()
+        if len(parts) != 2 or parts[0] != "import":
+            return None
+        p = Path(parts[1])
+        if not p.is_absolute():
+            p = self.root.parent / p
+        try:
+            return p.resolve()
+        except OSError:
+            return p
+
+    def _compose(self, content: str) -> str:
+        """The full config Caddy would run: the root file with our import replaced by `content`.
+        Without a root file (dev / tests), just `content`."""
+        if not self.root:
+            return content
+        try:
+            text = self.root.read_text()
+        except FileNotFoundError:
+            return content
+        except OSError as e:
+            raise CaddyError(500, f"cannot read Caddy's root config {self.root}: {e}")
+        out, found = [], False
+        for line in text.splitlines(keepends=True):
+            if self._import_target(line) == self.path.resolve():
+                found = True
+                out.append(content if content.endswith("\n") else content + "\n")
+            else:
+                out.append(line)
+        if not found:
+            raise CaddyError(409, f"{self.root} does not import {self.path}; applying it alone would "
+                                  "replace every other site. Fix the root file or DOCKERSERVER_CADDY_ROOT.")
+        return "".join(out)
+
     def _adapt(self, content: str) -> tuple[dict, list]:
+        content = self._compose(content)
         try:
             r = self._http.post("/adapt", content=content.encode(),
                                 headers={"Content-Type": "text/caddyfile"})
@@ -136,6 +200,7 @@ class CaddyManager:
     def status(self) -> dict:
         content = self.read() if self.enabled else ""
         out = {"enabled": self.enabled, "path": str(self.path), "admin_url": self.admin_url,
+               "root": self.root_info() if self.enabled else None,
                "content": content, "sha256": sha256(content), "reachable": False,
                "in_sync": None, "running_sites": [], "error": None}
         if not self.enabled:
@@ -152,7 +217,7 @@ class CaddyManager:
             adapted, _ = self._adapt(content)
             out["in_sync"] = adapted == running
         except CaddyError as e:
-            out["error"] = f"the file on disk does not parse: {e.message}"
+            out["error"] = e.message if e.status != 422 else f"the file on disk does not parse: {e.message}"
         return out
 
     def validate(self, content: str) -> dict:
