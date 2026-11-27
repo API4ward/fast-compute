@@ -26,6 +26,7 @@
       <button data-tab="jobs">Jobs</button>
       <button data-tab="usage">Usage</button>
       <button data-tab="sites">Sites</button>
+      <button data-tab="caddy">Caddy</button>
     </nav>
     <span class="who" id="who"></span>
     <button class="btn" id="logout">Sign out</button>
@@ -95,6 +96,34 @@
         <div id="sites-summary"></div>
       </div>
       <div class="panel"><h2>All sites</h2><div id="sites"></div></div>
+    </section>
+    <!-- CADDY -->
+    <section data-tab="caddy" class="hidden">
+      <div class="panel">
+        <div class="row" style="margin-bottom:12px">
+          <h2 style="margin:0">Caddy (HTTPS front door)</h2>
+          <button class="btn" id="caddy-refresh">Refresh</button>
+          <button class="btn hidden" id="caddy-reload">Load file into Caddy</button>
+        </div>
+        <div id="caddy-status"></div>
+        <h3>Running sites</h3>
+        <div id="caddy-sites"></div>
+      </div>
+      <div class="panel">
+        <h2>Caddyfile</h2>
+        <p class="muted">Validate checks the syntax without changing anything. Apply loads the config into
+          Caddy first (Caddy keeps the old config if the new one fails) and only then saves the file; the
+          previous file is kept as a backup below. Use absolute paths in <code>import</code> lines.</p>
+        <textarea id="caddy-editor" class="code" spellcheck="false" autocomplete="off" rows="28"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button class="btn" id="caddy-validate">Validate</button>
+          <button class="btn primary" id="caddy-apply">Apply</button>
+          <button class="btn" id="caddy-revert">Discard edits</button>
+          <span class="muted" id="caddy-dirty"></span>
+        </div>
+        <div id="caddy-result" style="margin-top:12px"></div>
+      </div>
+      <div class="panel"><h2>Backups</h2><div id="caddy-backups"></div></div>
     </section>
   </main>
 </div>
@@ -325,6 +354,107 @@ async function loadSites() {
   } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
 }
 
+// ----- Caddy -----
+let caddyBase = null;   // { content, sha256 } the editor was opened on
+
+function caddySitesTable(sites) {
+  if (!sites || !sites.length) return el("p", { class: "muted" }, "No sites.");
+  return table(["Hosts", "Listen", "Upstreams", "Handlers"], sites.map(s => el("tr", {},
+    td(el("span", {}, s.hosts.flatMap((h, i) => [i ? ", " : null, h,
+      s.allowed_host && s.allowed_host[h] === false
+        ? el("span", { class: "s-timeout", title: "not in DOCKERSERVER_ALLOWED_HOSTS: OAuth / MCP connector sign-in will not answer on this host" }, " ⚠") : null])), "wrap"),
+    td(s.listen.join(", ")), td(s.upstreams.join(", ") || "–", "wrap"), td(s.handlers.join(", "), "wrap"))));
+}
+
+function caddyMarkDirty() {
+  const dirty = caddyBase && $("caddy-editor").value !== caddyBase.content;
+  $("caddy-dirty").textContent = dirty ? "unsaved edits" : "";
+}
+
+async function loadCaddy({ keepEdits = false } = {}) {
+  const st = $("caddy-status");
+  try {
+    const c = await api("/admin/caddy");
+    const ed = $("caddy-editor");
+    const dirty = caddyBase && ed.value !== caddyBase.content;
+    if (!keepEdits || !dirty) ed.value = c.content;
+    caddyBase = { content: c.content, sha256: c.sha256 };
+    const sync = c.in_sync === true ? el("span", { class: "s-succeeded" }, "running config matches the file")
+      : c.in_sync === false ? el("span", { class: "s-timeout" }, "running config differs from the file")
+      : el("span", { class: "muted" }, "–");
+    clear(st).append(el("div", { class: "stats" },
+      el("div", { class: "stat" }, el("div", { class: "v" }, c.reachable ? "up" : "unreachable"), el("div", { class: "k" }, "admin API " + c.admin_url)),
+      el("div", { class: "stat" }, el("div", { class: "v", style: "font-size:15px" }, sync), el("div", { class: "k" }, c.path))),
+      ...(c.error ? [el("p", { class: "s-error" }, c.error)] : []));
+    $("caddy-reload").classList.toggle("hidden", c.in_sync !== false);
+    clear($("caddy-sites")).append(caddySitesTable(c.running_sites));
+    caddyMarkDirty();
+  } catch (e) { clear(st).append(el("p", { class: "s-error" }, e.message)); }
+  loadCaddyBackups();
+}
+
+async function loadCaddyBackups() {
+  const box = $("caddy-backups");
+  try {
+    const bs = await api("/admin/caddy/backups");
+    clear(box).append(bs.length ? table(["Saved (UTC)", "Replaced by", { label: "Size", num: true }, ""],
+      bs.map(b => el("tr", {}, td(fmtTime(b.saved_at)), td(b.replaced_by), td(fmtBytes(b.bytes), "num"),
+        td(el("button", { class: "btn", onclick: async () => {
+          try {
+            $("caddy-editor").value = await api(`/admin/caddy/backups/${encodeURIComponent(b.name)}`, { raw: true });
+            caddyMarkDirty();
+            showMsg($("caddy-result"), "Backup loaded into the editor. Review it, then Apply to roll back.", true);
+            $("caddy-editor").scrollIntoView({ behavior: "smooth" });
+          } catch (e) { showMsg($("caddy-result"), e.message); }
+        } }, "Load into editor")))))
+      : el("p", { class: "muted" }, "No backups yet (one is made on every Apply)."));
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+}
+
+function caddyShowResult(r, okText) {
+  const box = clear($("caddy-result"));
+  if (r.ok === false) { box.append(el("p", { class: "s-error" }, "Invalid:"), el("pre", { class: "logs" }, r.error)); return; }
+  box.append(el("p", { class: "s-succeeded" }, okText));
+  if (r.warnings && r.warnings.length)
+    box.append(el("pre", { class: "logs" }, r.warnings.map(w => `${w.file || ""}:${w.line || ""} ${w.directive || ""} ${w.message || JSON.stringify(w)}`).join("\n")));
+  box.append(el("h3", {}, "Sites in this config"), caddySitesTable(r.sites));
+}
+
+$("caddy-editor").addEventListener("input", caddyMarkDirty);
+$("caddy-editor").addEventListener("keydown", ev => {   // Tab inserts a tab (Caddyfile indentation)
+  if (ev.key !== "Tab" || ev.shiftKey || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  ev.preventDefault();
+  const t = ev.target, a = t.selectionStart;
+  t.setRangeText("\t", a, t.selectionEnd, "end");
+  caddyMarkDirty();
+});
+$("caddy-refresh").addEventListener("click", () => loadCaddy({ keepEdits: true }));
+$("caddy-revert").addEventListener("click", () => {
+  if (caddyBase && $("caddy-editor").value !== caddyBase.content && !confirm("Discard your edits?")) return;
+  caddyBase = null; loadCaddy();
+});
+$("caddy-validate").addEventListener("click", async () => {
+  try { caddyShowResult(await api("/admin/caddy/validate", { method: "POST", body: { content: $("caddy-editor").value } }), "Valid."); }
+  catch (e) { showMsg($("caddy-result"), e.message); }
+});
+$("caddy-apply").addEventListener("click", async () => {
+  if (!confirm("Apply this Caddyfile? Caddy switches to it immediately for all sites.")) return;
+  const btn = $("caddy-apply"); btn.disabled = true;
+  try {
+    const r = await api("/admin/caddy", { method: "PUT",
+      body: { content: $("caddy-editor").value, base_sha256: caddyBase ? caddyBase.sha256 : null } });
+    caddyShowResult(r, "Applied and saved." + (r.backup ? ` Previous file kept as ${r.backup}.` : ""));
+    caddyBase = null; await loadCaddy();
+  } catch (e) {
+    clear($("caddy-result")).append(el("p", { class: "s-error" }, "Not applied:"), el("pre", { class: "logs" }, e.message));
+  } finally { btn.disabled = false; }
+});
+$("caddy-reload").addEventListener("click", async () => {
+  if (!confirm("Load the Caddyfile on disk into Caddy as it is?")) return;
+  try { caddyShowResult(await api("/admin/caddy/reload", { method: "POST" }), "Loaded the file into Caddy."); loadCaddy({ keepEdits: true }); }
+  catch (e) { showMsg($("caddy-result"), e.message); }
+});
+
 function selectTab(name) { document.querySelector(`nav button[data-tab="${name}"]`).click(); }
 
 $("create-form").addEventListener("submit", async ev => {
@@ -345,7 +475,7 @@ $("job-status").addEventListener("change", loadJobs);
 $("usage-form").addEventListener("submit", loadUsage);
 $("sites-refresh").addEventListener("click", loadSites);
 
-setupTabs(tab => { if (tab === "jobs") loadJobs(); if (tab === "usage") loadUsage(); if (tab === "users") loadUsers(); if (tab === "sites") loadSites(); });
+setupTabs(tab => { if (tab === "jobs") loadJobs(); if (tab === "usage") loadUsage(); if (tab === "users") loadUsers(); if (tab === "sites") loadSites(); if (tab === "caddy") loadCaddy({ keepEdits: true }); });
 initLogin({ requireAdmin: true, onReady: () => loadUsers() });
 </script>
 </body>

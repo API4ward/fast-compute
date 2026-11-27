@@ -153,7 +153,12 @@ desktop user). Node API: see `node/README.md`.
 - Site config is in the project: `server/deploy/Caddyfile`. `/etc/caddy/Caddyfile` only contains
   `import <path>/deploy/Caddyfile`; `sudo sh deploy/install-caddy.sh` sets this up (installs Caddy
   from its official apt repo if needed and adds the `caddy` user to the owner's group to read it).
-- After editing: `sudo systemctl reload caddy`.
+- Edit it from `/admin-ui` → **Caddy** (validate, apply, backups; uses Caddy's local admin API at
+  `127.0.0.1:2019`, no sudo). By hand: edit the file, then `sudo systemctl reload caddy` or the
+  admin page's **Load file into Caddy**. Settings: `DOCKERSERVER_CADDYFILE` (default
+  `deploy/Caddyfile`), `DOCKERSERVER_CADDY_ADMIN` (default `http://127.0.0.1:2019`, loopback only),
+  `DOCKERSERVER_CADDY_MANAGE=false` turns the feature off. Edits made in the page leave
+  `deploy/Caddyfile` modified in the git checkout; commit them (or `git stash`) before `git pull`.
 - DNS: the domain is proxied by Cloudflare. The Caddyfile trusts Cloudflare's IP ranges and takes
   the visitor IP from `CF-Connecting-IP` (needed for the per-IP auth-failure limit). If the
   Cloudflare proxy is turned off, point the A record at the bridge's public IP and remove those lines.

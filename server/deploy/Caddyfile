@@ -1,6 +1,7 @@
 # Caddy site config for DockerServer. Edit HERE (in the project); /etc/caddy/Caddyfile only
 # contains:  import <path to server/>/deploy/Caddyfile   (written by deploy/install-caddy.sh)
-# Apply changes with:  sudo systemctl reload caddy
+# Apply changes with:  sudo systemctl reload caddy   - or edit it in /admin-ui -> Caddy, which
+# validates, loads it through Caddy's admin API (127.0.0.1:2019, keep it enabled) and keeps backups.
 #
 # DockerServer listens on 127.0.0.1:8800 only; Caddy terminates HTTPS (automatic certificate)
 # and reverse-proxies to it. The domain is proxied by Cloudflare (orange cloud), so Cloudflare's

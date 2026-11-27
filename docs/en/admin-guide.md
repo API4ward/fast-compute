@@ -29,6 +29,15 @@ Sign in with an admin token (kept only in that browser tab).
   awake hours, cost) and every site in detail (container `fc-site-<id>`, awake/asleep, files, last
   visit). Read-only; file contents are not shown. A user's page also lists their sites and has a
   **Delete user** button.
+- **Caddy**: the HTTPS front door. Shows whether Caddy's admin API is up, whether the running
+  config matches `server/deploy/Caddyfile`, and the running sites (hosts, upstreams; a ⚠ marks a
+  host missing from `DOCKERSERVER_ALLOWED_HOSTS`, where connector sign-in would not answer). Edit
+  the Caddyfile in place: **Validate** only parses it; **Apply** loads it into Caddy first (Caddy
+  keeps the old config if the new one fails) and only then writes the file, keeping the previous
+  file under **Backups** (last 30, in `server/data/caddy/backups/`). To roll back, **Load into
+  editor** on a backup, then Apply. If the file was edited by hand on the host, **Load file into
+  Caddy** applies it without sudo. Changing the main host still needs the matching
+  `DOCKERSERVER_ALLOWED_HOSTS` / `PUBLIC_URL` edit in `.env` and a service restart.
 
 ## Disable vs. suspend
 

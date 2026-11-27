@@ -27,6 +27,12 @@ CPU/内存）。影响用户正在运行任务的唯一方式是**暂停**该用
 - **Sites（站点）**：每个用户的站点容器汇总（站点数、唤醒中的容器、存储、访问次数、流量、唤醒时长、
   费用），以及所有站点的明细（容器名 `fc-site-<id>`、唤醒/休眠、文件数、最后访问）。只读，看不到文件内容。
   用户详情里也有该用户的站点列表，以及 **Delete user（删除用户）** 按钮。
+- **Caddy**：HTTPS 入口。显示 Caddy 管理接口是否在线、正在运行的配置是否与 `server/deploy/Caddyfile` 一致，
+  以及正在运行的站点（域名、上游；⚠ 表示该域名不在 `DOCKERSERVER_ALLOWED_HOSTS` 中，连接器登录在该域名上不可用）。
+  可以直接编辑 Caddyfile：**Validate** 只做语法检查；**Apply** 先把新配置加载进 Caddy（失败时 Caddy 保持旧配置），
+  成功后才写入文件，并把旧文件保存在 **Backups**（最近 30 份，位于 `server/data/caddy/backups/`）。
+  回滚：在备份上点 **Load into editor**，再 Apply。如果在服务器上手工改了文件，点 **Load file into Caddy**
+  即可生效，无需 sudo。修改主域名时仍需同步修改 `.env` 中的 `DOCKERSERVER_ALLOWED_HOSTS` / `PUBLIC_URL` 并重启服务。
 
 ## 禁用与暂停
 

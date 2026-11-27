@@ -69,3 +69,5 @@ pre.logs { background: var(--code-bg); color: var(--code-text); padding: 12px; b
 .codebox pre.logs { margin: 0; padding-right: 72px; }
 .codebox .copy { position: absolute; top: 6px; right: 6px; font-size: 12px; padding: 2px 8px; }
 header a, #login a { color: var(--accent); }
+textarea.code { width: 100%; min-height: 320px; resize: vertical; tab-size: 4; white-space: pre; overflow: auto;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
