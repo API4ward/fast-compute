@@ -24,6 +24,16 @@ Sign in with an admin token (kept only in that browser tab).
 - **Credits** (inside a user): top-up or adjust with hours (negative deducts) and a note; the
   user's ledger (top-ups, adjustments, job charges, balance after each).
 - **Jobs**: read-only list across users (filter by status).
+- **Nodes**: every compute node from `DOCKERSERVER_NODES`: online / offline / draining, when it was
+  last seen and its latency, CPU and memory used / capacity as the node reports them (`/v1/info`),
+  features, allowed images, the jobs this server has running there (metadata only) and 24 h counts
+  (ok / failed / lost, CPU-hours). The page checks every node on open and every 20 s while it is
+  shown; the server also checks every 30 s in the background (`DOCKERSERVER_NODE_HEARTBEAT`), so
+  "unreachable since" is right even when nobody is looking. A warning appears when the node's own
+  job count differs from this server's (e.g. a container left behind). **Drain** stops new jobs
+  going to a node while its running jobs finish (use it before rebooting or updating a node);
+  **Resume** puts it back. The draining state is kept in `server/data/nodes.json`. Admin MCP:
+  `list_nodes`, `set_node_draining`.
 - **Usage**: per-user jobs, run time, CPU-hours, GB-hours and cost for a date range.
 - **Sites**: site containers per user (sites, awake containers, storage, requests, bytes served,
   awake hours, cost) and every site in detail (container `fc-site-<id>`, awake/asleep, files, last

@@ -111,3 +111,8 @@ def test_user_ui_has_welcome_tab(client):
     html = client.get("/ui").text
     assert 'data-tab="welcome"' in html and 'data-tab="dashboard"' in html
     assert "/static/welcome.js" in html and 'href="/welcome"' in html
+
+
+def test_admin_has_nodes_tab(client):
+    html = client.get("/admin-ui").text
+    assert 'data-tab="nodes"' in html and "/admin/nodes" in html and "function loadNodes" in html

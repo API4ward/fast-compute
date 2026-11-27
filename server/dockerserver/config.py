@@ -135,6 +135,8 @@ class Settings:
     local_execution: bool | None = field(default_factory=lambda: _bool("LOCAL_EXECUTION", None))
     node_info_ttl: float = field(default_factory=lambda: float(_env("NODE_INFO_TTL", "5")))
     node_poll_interval: float = field(default_factory=lambda: float(_env("NODE_POLL_INTERVAL", "2")))
+    # Probe every node's /v1/info this often (s) for the admin Nodes view; 0 turns it off.
+    node_heartbeat: float = field(default_factory=lambda: float(_env("NODE_HEARTBEAT", "30")))
     # A running job whose node can't be reached for this long is marked "lost".
     node_lost_grace: float = field(default_factory=lambda: float(_env("NODE_LOST_GRACE", "120")))
     # A job waiting for capacity is retried every QUEUE_RETRY s, for at most QUEUE_TIMEOUT s.

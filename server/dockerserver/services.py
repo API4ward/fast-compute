@@ -7,7 +7,7 @@ import base64
 import binascii
 import io
 import tarfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 from sqlalchemy import func, select
@@ -423,6 +423,88 @@ class Services:
                    **self._site_out(site, u.name)}
             out.append(row)
         return out
+
+    # ----- compute nodes (monitoring, drain) -----
+    def admin_nodes(self, db: Session, admin: User, probe: bool = True) -> dict:
+        """Every configured compute node: reachability, capacity/usage as the node reports it,
+        the jobs this server has running there, and 24 h counts. Job metadata only."""
+        self.require_admin(admin)
+        pool = self.runner.pool
+        if probe:
+            pool.probe_all()
+        now = utcnow()
+        since = now - timedelta(hours=24)
+        users = dict(db.execute(select(User.id, User.name)).all())
+        running = db.scalars(select(Job).where(Job.status.in_(("preparing", "running")))
+                             .order_by(Job.id)).all()
+        recent = db.execute(
+            select(Job.node, Job.status, Job.cpus, Job.started_at, Job.finished_at)
+            .where(Job.started_at >= since, Job.node.is_not(None))).all()
+        stats: dict[str, dict] = {}
+        for node, status, cpus, started, finished in recent:
+            st = stats.setdefault(node, {"jobs": 0, "succeeded": 0, "failed": 0, "lost": 0,
+                                         "cpu_hours": 0.0})
+            n = 1
+            st["jobs"] += n
+            st["cpu_hours"] += max(((finished or now) - started).total_seconds(), 0) * cpus / 3600
+            if status == "succeeded":
+                st["succeeded"] += n
+            elif status == "lost":
+                st["lost"] += n
+            elif status in TERMINAL_STATUSES:
+                st["failed"] += n
+
+        def job_row(j: Job) -> dict:
+            return {"id": j.id, "user_id": j.user_id, "user": users.get(j.user_id), "image": j.image,
+                    "status": j.status, "cpus": j.cpus, "mem_mb": j.mem_mb,
+                    "started_at": j.started_at.isoformat() if j.started_at else None,
+                    "timeout_seconds": j.timeout_seconds,
+                    "run_seconds": (now - j.started_at).total_seconds() if j.started_at else None}
+
+        def iso(t):
+            return datetime.fromtimestamp(t, timezone.utc).replace(tzinfo=None).isoformat() if t else None
+
+        nodes = []
+        for h in pool.health():
+            name = h["name"]
+            mine = [job_row(j) for j in running if j.node == name]
+            info = h.get("info") or None
+            nodes.append({
+                "name": name, "url": h.get("url"), "online": h["online"], "draining": h["draining"],
+                "status": ("offline" if not h["online"] else "draining" if h["draining"] else "online"),
+                "last_seen": iso(h.get("last_ok")), "last_check": iso(h.get("last_check")),
+                "down_since": iso(h.get("down_since")), "error": h.get("last_error"),
+                "latency_ms": h.get("latency_ms"),
+                "capacity": info.get("capacity") if info else None,
+                "used": info.get("used") if info else None,
+                "free": info.get("free") if info else None,
+                "node_active_jobs": info.get("active_jobs") if info else None,
+                "docker_version": info.get("docker_version") if info else None,
+                "features": info.get("features") if info else None,
+                "allowed_images": info.get("allowed_images") if info else None,
+                "allow_network": info.get("allow_network") if info else None,
+                "reserved": {"cpus": round(sum(j["cpus"] for j in mine), 3),
+                             "mem_mb": sum(j["mem_mb"] for j in mine)},
+                "pending": h.get("pending"),
+                "running_jobs": mine,
+                "last_24h": stats.get(name, {"jobs": 0, "succeeded": 0, "failed": 0, "lost": 0,
+                                             "cpu_hours": 0.0}),
+            })
+        local = pool.local is not None
+        return {"nodes": nodes, "local_execution": local,
+                "local_running_jobs": [job_row(j) for j in running if j.node == "local"] if local else [],
+                "queued_jobs": db.scalar(select(func.count()).select_from(Job).where(Job.status == "queued")),
+                "heartbeat_seconds": self.settings.node_heartbeat, "checked_at": now.isoformat()}
+
+    def set_node_draining(self, admin: User, name: str, draining: bool) -> dict:
+        self.require_admin(admin)
+        try:
+            self.runner.pool.set_draining(name, draining)
+        except KeyError:
+            raise ServiceError(404, f"no compute node named {name}")
+        except OSError as e:
+            raise ServiceError(500, f"could not save node state: {e}")
+        return {"name": name, "draining": draining}
 
     # ----- the caller's own environment variables -----
     def list_env(self, db: Session, user: User, reveal: bool = False) -> list[dict]:

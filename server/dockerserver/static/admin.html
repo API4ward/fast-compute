@@ -24,6 +24,7 @@
     <nav>
       <button data-tab="users" class="active">Users</button>
       <button data-tab="jobs">Jobs</button>
+      <button data-tab="nodes">Nodes</button>
       <button data-tab="usage">Usage</button>
       <button data-tab="sites">Sites</button>
       <button data-tab="caddy">Caddy</button>
@@ -68,6 +69,24 @@
           single job. To stop a user's work, suspend the user (Users → Open).</p>
         <div id="jobs"></div>
       </div>
+    </section>
+
+    <!-- NODES -->
+    <section data-tab="nodes" class="hidden">
+      <div class="panel">
+        <div class="row" style="margin-bottom:12px">
+          <h2 style="margin:0">Compute nodes</h2>
+          <button class="btn" id="nodes-refresh">Check now</button>
+          <label class="inline"><input type="checkbox" id="nodes-auto" checked> auto-refresh (20 s)</label>
+          <span class="muted" id="nodes-checked"></span>
+        </div>
+        <div id="nodes-summary"></div>
+        <p class="muted">Capacity, used and free are what each node reports on <code>/v1/info</code>; "jobs here"
+          are the jobs this server has running on it. A <b>draining</b> node gets no new jobs and its running
+          jobs finish normally. Nodes are configured in <code>server/.env</code> (<code>DOCKERSERVER_NODES</code>).</p>
+        <div id="nodes"></div>
+      </div>
+      <div class="panel"><h2>Jobs running on nodes</h2><div id="nodes-jobs"></div></div>
     </section>
 
     <!-- USAGE -->
@@ -355,6 +374,116 @@ async function loadSites() {
   } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
 }
 
+// ----- Nodes -----
+let nodesTimer = null;
+
+function ago(t) {
+  if (!t) return "never";
+  const s = Math.max(0, (Date.now() - Date.parse(t + "Z")) / 1000);
+  if (s < 60) return Math.round(s) + "s ago";
+  if (s < 3600) return Math.round(s / 60) + "m ago";
+  if (s < 86400) return (s / 3600).toFixed(1) + "h ago";
+  return (s / 86400).toFixed(1) + "d ago";
+}
+
+function meter(used, cap, unit, digits = 1) {
+  if (cap == null) return el("span", { class: "muted" }, "–");
+  const pct = cap > 0 ? Math.min(100, Math.max(0, used / cap * 100)) : 0;
+  const cls = pct >= 90 ? "bad" : pct >= 70 ? "warn" : "";
+  const f = v => Number(v).toFixed(digits).replace(/\.0+$/, "");
+  return el("div", { class: "meter-box", title: `${pct.toFixed(0)}% used` },
+    el("div", { class: "meter" }, el("div", { class: "fill " + cls, style: `width:${pct.toFixed(1)}%` })),
+    el("span", { class: "muted" }, `${f(used)} / ${f(cap)} ${unit}`));
+}
+
+function nodeStatusBadge(n) {
+  const cls = { online: "s-succeeded", draining: "s-timeout", offline: "s-error" }[n.status] || "";
+  return el("span", { class: "badge " + cls }, n.status);
+}
+
+function nodeCard(n) {
+  const busy = n.running_jobs.length;
+  const mismatch = n.online && n.node_active_jobs != null && n.node_active_jobs !== busy;
+  const drainBtn = el("button", { class: "btn" + (n.draining ? " primary" : ""), onclick: async () => {
+    if (!n.draining && !confirm(`Drain ${n.name}? It gets no new jobs; its ${busy} running job(s) finish normally.`)) return;
+    drainBtn.disabled = true;
+    try { await api(`/admin/nodes/${encodeURIComponent(n.name)}/${n.draining ? "undrain" : "drain"}`, { method: "POST" }); }
+    catch (e) { showMsg($("nodes"), e.message); }
+    loadNodes({ probe: false });
+  } }, n.draining ? "Resume (accept jobs)" : "Drain");
+  const d24 = n.last_24h;
+  const kv = (k, v) => el("div", {}, el("div", { class: "k" }, k), el("div", {}, v));
+  return el("div", { class: "node-card" },
+    el("div", { class: "row", style: "align-items:center" },
+      el("h3", { style: "margin:0" }, n.name), nodeStatusBadge(n),
+      el("span", { class: "muted" }, n.url || ""),
+      el("span", { style: "margin-left:auto" }, drainBtn)),
+    !n.online ? el("p", { class: "s-error" },
+      `Unreachable${n.down_since ? " since " + fmtTime(n.down_since) + " UTC (" + ago(n.down_since) + ")" : ""}: ${n.error || "no answer"}`) : null,
+    el("div", { class: "stats", style: "margin:10px 0" },
+      el("div", { class: "stat" }, el("div", { class: "k" }, "CPU used"),
+        n.capacity ? meter(n.used.cpus, n.capacity.cpus, "cores") : meter(null)),
+      el("div", { class: "stat" }, el("div", { class: "k" }, "Memory used"),
+        n.capacity ? meter(n.used.mem_mb / 1024, n.capacity.mem_mb / 1024, "GB") : meter(null)),
+      el("div", { class: "stat" }, el("div", { class: "v" }, busy), el("div", { class: "k" }, "jobs here")),
+      el("div", { class: "stat" }, el("div", { class: "v" }, n.latency_ms == null ? "–" : Math.round(n.latency_ms) + " ms"),
+        el("div", { class: "k" }, "latency")),
+      el("div", { class: "stat" }, el("div", { class: "v", style: "font-size:15px" }, ago(n.last_seen)),
+        el("div", { class: "k" }, "last seen"))),
+    mismatch ? el("p", { class: "s-timeout" }, `The node reports ${n.node_active_jobs} active job(s) but this server has ${busy} running there `
+      + "(a job may be starting or finishing, or a container was left behind).") : null,
+    el("div", { class: "kv" },
+      kv("Free", n.free ? `${n.free.cpus} cores · ${(n.free.mem_mb / 1024).toFixed(1)} GB` : "–"),
+      kv("Reserved by jobs here", `${n.reserved.cpus} cores · ${(n.reserved.mem_mb / 1024).toFixed(1)} GB`),
+      kv("Last 24 h", `${d24.jobs} job(s): ${d24.succeeded} ok, ${d24.failed} failed/stopped, ${d24.lost} lost · ${d24.cpu_hours.toFixed(2)} CPU-hours`),
+      kv("Features", n.features ? (n.features.join(", ") || "none") : "–"),
+      kv("Images", n.allowed_images ? n.allowed_images.join(", ") : "–"),
+      kv("Network jobs", n.allow_network == null ? "–" : n.allow_network ? "allowed" : "refused"),
+      kv("Docker", n.docker_version || "–"),
+      kv("Last check", n.last_check ? `${fmtTime(n.last_check)} UTC (${ago(n.last_check)})` : "–")));
+}
+
+function nodeJobsTable(rows) {
+  if (!rows.length) return el("p", { class: "muted" }, "No jobs running on any node.");
+  return table(["Node", "Job", "User", "Status", "Image", { label: "CPU", num: true }, { label: "MB", num: true },
+    "Started", { label: "Running", num: true }, { label: "Timeout", num: true }],
+    rows.map(j => el("tr", {}, td(j.node), td(j.id), td(j.user || j.user_id), td(statusBadge(j.status)), td(j.image),
+      td(j.cpus, "num"), td(j.mem_mb, "num"), td(fmtTime(j.started_at)), td(fmtDur(j.run_seconds), "num"),
+      td(fmtDur(j.timeout_seconds), "num"))));
+}
+
+async function loadNodes({ probe = true } = {}) {
+  const box = $("nodes"), sum = $("nodes-summary");
+  try {
+    const r = await api(`/admin/nodes?probe=${probe}`);
+    const ns = r.nodes;
+    const on = ns.filter(n => n.online);
+    const tot = (f, k) => on.reduce((a, n) => a + (n[f] ? n[f][k] : 0), 0);
+    const jobs = ns.flatMap(n => n.running_jobs.map(j => ({ ...j, node: n.name })))
+      .concat(r.local_running_jobs.map(j => ({ ...j, node: "local" })));
+    clear(sum).append(el("div", {}, el("div", { class: "stats", style: "margin-bottom:8px" },
+      el("div", { class: "stat" }, el("div", { class: "v" }, `${on.length} / ${ns.length}`), el("div", { class: "k" }, "nodes online")),
+      el("div", { class: "stat" }, el("div", { class: "v" }, `${+tot("free", "cpus").toFixed(2)} / ${+tot("capacity", "cpus").toFixed(2)}`), el("div", { class: "k" }, "free / total cores")),
+      el("div", { class: "stat" }, el("div", { class: "v" }, `${(tot("free", "mem_mb") / 1024).toFixed(1)} / ${(tot("capacity", "mem_mb") / 1024).toFixed(1)}`), el("div", { class: "k" }, "free / total GB")),
+      el("div", { class: "stat" }, el("div", { class: "v" }, jobs.length), el("div", { class: "k" }, "running jobs")),
+      el("div", { class: "stat" }, el("div", { class: "v" }, r.queued_jobs), el("div", { class: "k" }, "queued jobs"))),
+      r.local_execution ? el("p", { class: "muted" }, "Local execution on this host's Docker is on (used after the nodes).") : null,
+      !ns.length ? el("p", { class: "s-timeout" }, "No compute node is configured.") : null));
+    clear(box).append(...ns.map(nodeCard));
+    clear($("nodes-jobs")).append(nodeJobsTable(jobs));
+    $("nodes-checked").textContent = `checked ${fmtTime(r.checked_at)} UTC` + (r.heartbeat_seconds ? ` · background check every ${r.heartbeat_seconds}s` : "");
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+}
+
+function nodesAuto(on) {
+  clearInterval(nodesTimer); nodesTimer = null;
+  if (on && $("nodes-auto").checked) nodesTimer = setInterval(() => {
+    if (!document.hidden) loadNodes();
+  }, 20000);
+}
+$("nodes-refresh").addEventListener("click", () => loadNodes());
+$("nodes-auto").addEventListener("change", () => nodesAuto(true));
+
 // ----- Caddy -----
 let caddyBase = null;   // { content, sha256 } the editor was opened on
 
@@ -478,7 +607,7 @@ $("job-status").addEventListener("change", loadJobs);
 $("usage-form").addEventListener("submit", loadUsage);
 $("sites-refresh").addEventListener("click", loadSites);
 
-setupTabs(tab => { if (tab === "jobs") loadJobs(); if (tab === "usage") loadUsage(); if (tab === "users") loadUsers(); if (tab === "sites") loadSites(); if (tab === "caddy") loadCaddy({ keepEdits: true }); });
+setupTabs(tab => { nodesAuto(tab === "nodes"); if (tab === "nodes") loadNodes(); if (tab === "jobs") loadJobs(); if (tab === "usage") loadUsage(); if (tab === "users") loadUsers(); if (tab === "sites") loadSites(); if (tab === "caddy") loadCaddy({ keepEdits: true }); });
 initLogin({ requireAdmin: true, onReady: () => loadUsers() });
 </script>
 </body>
