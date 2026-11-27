@@ -184,6 +184,8 @@ class Settings:
     caddy_manage: bool = field(default_factory=lambda: _bool("CADDY_MANAGE", True))
     # The Caddyfile Caddy actually uses (/etc/caddy/Caddyfile only imports it).
     caddyfile: Path = field(default_factory=lambda: (PROJECT_DIR / _env("CADDYFILE", "deploy/Caddyfile")).resolve())
+    # Caddy's root config (it imports CADDYFILE, maybe other projects' files too); read only.
+    caddy_root: Path = field(default_factory=lambda: Path(_env("CADDY_ROOT", "/etc/caddy/Caddyfile")))
     # Caddy's local admin API (loopback only).
     caddy_admin: str = field(default_factory=lambda: _env("CADDY_ADMIN", "http://127.0.0.1:2019"))
 

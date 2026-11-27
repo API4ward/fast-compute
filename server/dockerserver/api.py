@@ -76,7 +76,8 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     svc = Services(settings, Session_, runner)
     svc.sites = SiteManager(settings, Session_, runtime=site_runtime)
     caddy = CaddyManager(settings.caddyfile, settings.caddy_admin, settings.data_dir / "caddy" / "backups",
-                         enabled=settings.caddy_manage, transport=caddy_transport)
+                         enabled=settings.caddy_manage, transport=caddy_transport,
+                         root=settings.caddy_root)
     site_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=3.0), trust_env=False)
     with Session_() as db:
         grant_missing_initial(db, settings.default_credit_hours)

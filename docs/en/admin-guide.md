@@ -38,6 +38,9 @@ Sign in with an admin token (kept only in that browser tab).
   editor** on a backup, then Apply. If the file was edited by hand on the host, **Load file into
   Caddy** applies it without sudo. Changing the main host still needs the matching
   `DOCKERSERVER_ALLOWED_HOSTS` / `PUBLIC_URL` edit in `.env` and a service restart.
+  Validate and Apply always work on Caddy's whole root config (`/etc/caddy/Caddyfile`, setting
+  `DOCKERSERVER_CADDY_ROOT`): the edit replaces only the `import` of our file, so sites imported from
+  other projects' Caddyfiles stay. If the root file does not import our file, Apply is refused.
 
 ## Disable vs. suspend
 

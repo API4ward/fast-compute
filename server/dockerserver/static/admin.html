@@ -113,7 +113,8 @@
         <h2>Caddyfile</h2>
         <p class="muted">Validate checks the syntax without changing anything. Apply loads the config into
           Caddy first (Caddy keeps the old config if the new one fails) and only then saves the file; the
-          previous file is kept as a backup below. Use absolute paths in <code>import</code> lines.</p>
+          previous file is kept as a backup below. Validate and Apply always use Caddy's whole root config, so
+          sites from other imported Caddyfiles stay. Use absolute paths in <code>import</code> lines.</p>
         <textarea id="caddy-editor" class="code" spellcheck="false" autocomplete="off" rows="28"></textarea>
         <div class="row" style="margin-top:8px">
           <button class="btn" id="caddy-validate">Validate</button>
@@ -385,6 +386,8 @@ async function loadCaddy({ keepEdits = false } = {}) {
     clear(st).append(el("div", { class: "stats" },
       el("div", { class: "stat" }, el("div", { class: "v" }, c.reachable ? "up" : "unreachable"), el("div", { class: "k" }, "admin API " + c.admin_url)),
       el("div", { class: "stat" }, el("div", { class: "v", style: "font-size:15px" }, sync), el("div", { class: "k" }, c.path))),
+      ...(c.root && c.root.found ? [el("p", { class: "muted" }, `Caddy starts from ${c.root.path}, which imports this file`
+        + (c.root.other_imports.length ? ` and also ${c.root.other_imports.join(", ")} (kept as they are on every Apply).` : "."))] : []),
       ...(c.error ? [el("p", { class: "s-error" }, c.error)] : []));
     $("caddy-reload").classList.toggle("hidden", c.in_sync !== false);
     clear($("caddy-sites")).append(caddySitesTable(c.running_sites));

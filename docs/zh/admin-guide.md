@@ -33,6 +33,8 @@ CPU/内存）。影响用户正在运行任务的唯一方式是**暂停**该用
   成功后才写入文件，并把旧文件保存在 **Backups**（最近 30 份，位于 `server/data/caddy/backups/`）。
   回滚：在备份上点 **Load into editor**，再 Apply。如果在服务器上手工改了文件，点 **Load file into Caddy**
   即可生效，无需 sudo。修改主域名时仍需同步修改 `.env` 中的 `DOCKERSERVER_ALLOWED_HOSTS` / `PUBLIC_URL` 并重启服务。
+  检查和应用始终基于 Caddy 的完整根配置（`/etc/caddy/Caddyfile`，配置项 `DOCKERSERVER_CADDY_ROOT`）：只替换其中
+  引入本项目文件的 `import` 行，其他项目引入的 Caddyfile 中的站点保持不变。如果根配置没有引入本项目文件，应用会被拒绝。
 
 ## 禁用与暂停
 
