@@ -267,6 +267,12 @@ class RemoteNodeBackend(Backend):
             timeout=httpx.Timeout(read_timeout, connect=connect_timeout), transport=transport)
         self._info: dict | None = None
         self._info_at = 0.0
+        # health, for the admin "Nodes" view (wall-clock times)
+        self.last_ok: float | None = None          # last successful contact of any kind
+        self.last_check: float | None = None       # last /v1/info attempt
+        self.last_error: str | None = None         # error of the last /v1/info attempt, if it failed
+        self.down_since: float | None = None       # first failed /v1/info after the last success
+        self.latency_ms: float | None = None       # duration of the last successful /v1/info
 
     def __repr__(self):  # never show the token
         return f"RemoteNodeBackend({self.name!r}, {self.url!r})"
@@ -298,15 +304,45 @@ class RemoteNodeBackend(Backend):
     def info(self, max_age: float = 0) -> dict | None:
         if self._info is not None and time.monotonic() - self._info_at <= max_age:
             return self._info
+        return self._fetch_info(retry=True)
+
+    def probe(self, timeout: float = 4.0) -> dict | None:
+        """One quick /v1/info attempt (no retries), for monitoring. Updates the cache too."""
+        return self._fetch_info(retry=False, timeout=timeout)
+
+    def _fetch_info(self, retry: bool, timeout: float | None = None) -> dict | None:
+        t0 = time.monotonic()
+        self.last_check = time.time()
         try:
-            r = self._req("GET", "/v1/info")
+            if retry:
+                r = self._req("GET", "/v1/info")
+            else:
+                try:
+                    r = self._http.get("/v1/info", timeout=httpx.Timeout(timeout, connect=timeout))
+                except httpx.HTTPError as e:
+                    raise BackendError(f"node {self.name} unreachable: {type(e).__name__}") from e
             if r.status_code != 200:
                 raise BackendError(f"info: HTTP {r.status_code}: {self._detail(r)}")
-            self._info, self._info_at = r.json(), time.monotonic()
+            info = r.json()
+            if not isinstance(info, dict) or "capacity" not in info or "free" not in info:
+                raise BackendError("info: unexpected answer")
+            self._info, self._info_at = info, time.monotonic()
+            self.latency_ms = round((time.monotonic() - t0) * 1000, 1)
+            self.last_ok, self.last_error, self.down_since = time.time(), None, None
         except (BackendError, ValueError) as e:
-            log.warning("node %s info failed: %s", self.name, e)
+            if self.last_error is None:
+                log.warning("node %s info failed: %s", self.name, e)
             self._info, self._info_at = None, time.monotonic()
+            self.last_error = str(e)
+            self.down_since = self.down_since or time.time()
         return self._info
+
+    def health(self) -> dict:
+        """Monitoring snapshot from the last contact (no network)."""
+        return {"name": self.name, "url": self.url, "online": self._info is not None,
+                "info": self._info, "last_ok": self.last_ok, "last_check": self.last_check,
+                "last_error": self.last_error, "down_since": self.down_since,
+                "latency_ms": self.latency_ms}
 
     def invalidate(self):
         self._info_at = 0.0
@@ -362,6 +398,7 @@ class RemoteNodeBackend(Backend):
             return None
         d = r.json()
         h.unreachable_since, h.last_seen = None, time.time()
+        self.last_ok = h.last_seen
         started, finished = d.get("started_at"), d.get("finished_at")
         dur = (finished - started) if isinstance(started, (int, float)) and isinstance(finished, (int, float)) else None
         st = ExecStatus(

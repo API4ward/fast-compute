@@ -71,3 +71,11 @@ pre.logs { background: var(--code-bg); color: var(--code-text); padding: 12px; b
 header a, #login a { color: var(--accent); }
 textarea.code { width: 100%; min-height: 320px; resize: vertical; tab-size: 4; white-space: pre; overflow: auto;
   font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.node-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.meter-box { display: flex; flex-direction: column; gap: 4px; min-width: 180px; }
+.meter { height: 8px; background: var(--row-hover); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.meter .fill { height: 100%; background: var(--ok); }
+.meter .fill.warn { background: var(--warn); } .meter .fill.bad { background: var(--bad); }
+.kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 8px 20px; margin-top: 6px; }
+.kv .k { color: var(--muted); font-size: 12px; }
+label.inline { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }

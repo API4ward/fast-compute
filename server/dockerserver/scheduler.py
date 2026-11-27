@@ -7,10 +7,21 @@ retried. A job larger than every reachable node's total capacity is rejected.
 
 Local execution (this host's Docker) is used only when enabled (default: when no node is
 configured), and only as the last option.
+
+Monitoring: a heartbeat thread probes every node's /v1/info every node_heartbeat seconds so
+the admin "Nodes" view knows when a node was last seen. An admin can mark a node "draining":
+it gets no new jobs, running jobs finish normally. The draining set is kept in
+<data_dir>/nodes.json so it survives a restart.
 """
+import json
+import logging
+import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from .backends import Backend, LocalDockerBackend, RemoteNodeBackend
+
+log = logging.getLogger("dockerserver.scheduler")
 
 
 class NodePool:
@@ -24,6 +35,76 @@ class NodePool:
         self._lock = threading.Lock()
         # in-flight reservations not yet visible in a node's /v1/info (name -> [cpus, mem])
         self._pending: dict[str, list[float]] = {}
+        self._state_file = settings.data_dir / "nodes.json"
+        self.draining: set[str] = self._load_draining()
+        self._hb_stop = threading.Event()
+        self._hb_thread: threading.Thread | None = None
+
+    # ---- draining (persisted) ----
+    def _load_draining(self) -> set[str]:
+        try:
+            return set(json.loads(self._state_file.read_text()).get("draining", []))
+        except FileNotFoundError:
+            return set()
+        except (OSError, ValueError, AttributeError) as e:
+            log.warning("cannot read %s: %s", self._state_file, e)
+            return set()
+
+    def set_draining(self, name: str, draining: bool) -> bool:
+        if not any(b.name == name for b in self.nodes):
+            raise KeyError(name)
+        with self._lock:
+            (self.draining.add if draining else self.draining.discard)(name)
+            data = {"draining": sorted(self.draining)}
+        tmp = self._state_file.with_suffix(".tmp")
+        self._state_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data, indent=1) + "\n")
+        os.replace(tmp, self._state_file)
+        log.warning("node %s %s", name, "draining (no new jobs)" if draining else "accepting jobs again")
+        return draining
+
+    # ---- monitoring ----
+    def probe_all(self, timeout: float = 4.0):
+        """Probe every remote node once, in parallel."""
+        remotes = [b for b in self.nodes if isinstance(b, RemoteNodeBackend)]
+        if not remotes:
+            return
+        with ThreadPoolExecutor(max_workers=min(len(remotes), 8)) as ex:
+            list(ex.map(lambda b: b.probe(timeout), remotes))
+
+    def health(self) -> list[dict]:
+        out = []
+        with self._lock:
+            pending = {k: list(v) for k, v in self._pending.items()}
+        for b in self.nodes:
+            h = b.health() if isinstance(b, RemoteNodeBackend) else {"name": b.name, "online": True}
+            h["draining"] = b.name in self.draining
+            pc, pm = pending.get(b.name, (0, 0))
+            h["pending"] = {"cpus": pc, "mem_mb": pm}
+            out.append(h)
+        return out
+
+    def start_heartbeat(self):
+        interval = getattr(self.settings, "node_heartbeat", 0)
+        if not interval or interval <= 0 or not self.nodes or self._hb_thread is not None:
+            return
+        self._hb_stop.clear()
+
+        def loop():
+            while not self._hb_stop.is_set():
+                try:
+                    self.probe_all()
+                except Exception:  # never let the heartbeat die
+                    log.exception("node heartbeat")
+                self._hb_stop.wait(interval)
+        self._hb_thread = threading.Thread(target=loop, name="node-heartbeat", daemon=True)
+        self._hb_thread.start()
+
+    def stop_heartbeat(self):
+        self._hb_stop.set()
+        if self._hb_thread is not None:
+            self._hb_thread.join(timeout=5)
+            self._hb_thread = None
 
     @property
     def remote_enabled(self) -> bool:
@@ -62,6 +143,8 @@ class NodePool:
         with self._lock:
             pending = {k: list(v) for k, v in self._pending.items()}
         for b, info in self._infos():
+            if b.name in self.draining:
+                continue
             if needs_env and "env" not in (info.get("features") or []):
                 continue
             free = info["free"]

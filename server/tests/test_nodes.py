@@ -262,3 +262,71 @@ def test_default_limits_configurable(tmp_path):
     with TestClient(app) as c:
         u = make_user(c, app.state.admin_token, "uma")
         assert u["max_cpus"] == 4 and u["max_mem_mb"] == 4096
+
+
+# ---------- admin monitoring: /admin/nodes, drain ----------
+def test_admin_nodes_status_and_running_jobs(tmp_path):
+    a, b = FakeNode("a", cpus=4, mem_mb=8000), FakeNode("b", cpus=10)
+    a.features = ["env"]
+    b.up = False
+    app = make_app(tmp_path, [a, b])
+    with TestClient(app) as c:
+        atok = app.state.admin_token
+        u = big_user(c, atok, "rita")
+        jid = c.post("/jobs", headers=auth(u["token"]), data={"command": "sleep 2", "cpus": "1.5",
+                                                               "mem_mb": "512"}).json()["id"]
+        wait_job(c, u["token"], jid, want="running")
+        r = c.get("/admin/nodes", headers=auth(atok))
+        assert r.status_code == 200, r.text
+        d = {n["name"]: n for n in r.json()["nodes"]}
+        assert d["a"]["status"] == "online" and d["a"]["last_seen"] and d["a"]["latency_ms"] is not None
+        assert d["a"]["capacity"] == {"cpus": 4, "mem_mb": 8000} and d["a"]["used"]["cpus"] == 1.5
+        assert d["a"]["features"] == ["env"] and d["a"]["node_active_jobs"] == 1
+        assert [j["id"] for j in d["a"]["running_jobs"]] == [jid]
+        assert d["a"]["running_jobs"][0]["user"] == "rita" and "command" not in d["a"]["running_jobs"][0]
+        assert d["a"]["reserved"] == {"cpus": 1.5, "mem_mb": 512}
+        assert d["b"]["status"] == "offline" and d["b"]["capacity"] is None
+        assert d["b"]["last_seen"] is None and d["b"]["down_since"] and "unreachable" in d["b"]["error"]
+        assert TOKEN not in r.text
+        # node comes back
+        b.up = True
+        d = {n["name"]: n for n in c.get("/admin/nodes", headers=auth(atok)).json()["nodes"]}
+        assert d["b"]["status"] == "online" and d["b"]["down_since"] is None and d["b"]["error"] is None
+        wait_job(c, u["token"], jid)
+        d = {n["name"]: n for n in c.get("/admin/nodes", headers=auth(atok)).json()["nodes"]}
+        assert d["a"]["running_jobs"] == [] and d["a"]["last_24h"]["succeeded"] == 1
+        # admins only
+        assert c.get("/admin/nodes", headers=auth(u["token"])).status_code == 403
+
+
+def test_drain_node_skips_it_and_persists(tmp_path):
+    a, b = FakeNode("a", cpus=10), FakeNode("b", cpus=4)
+    app = make_app(tmp_path, [a, b])
+    with TestClient(app) as c:
+        atok = app.state.admin_token
+        u = big_user(c, atok, "sam")
+        assert c.post("/admin/nodes/a/drain", headers=auth(u["token"])).status_code == 403
+        assert c.post("/admin/nodes/nope/drain", headers=auth(atok)).status_code == 404
+        assert c.post("/admin/nodes/a/drain", headers=auth(atok)).json() == {"name": "a", "draining": True}
+        d = {n["name"]: n for n in c.get("/admin/nodes?probe=false", headers=auth(atok)).json()["nodes"]}
+        assert d["a"]["status"] == "draining" and d["a"]["draining"]
+        j = wait_job(c, u["token"], c.post("/jobs", headers=auth(u["token"]), data={"command": "true"}).json()["id"])
+        assert j["node"] == "b"                       # a has more room but is draining
+        # kept across a restart (read back from <data_dir>/nodes.json)
+        assert NodePool(Settings(data_dir=tmp_path), nodes=[]).draining == {"a"}
+        assert c.post("/admin/nodes/a/undrain", headers=auth(atok)).json()["draining"] is False
+        j = wait_job(c, u["token"], c.post("/jobs", headers=auth(u["token"]), data={"command": "true"}).json()["id"])
+        assert j["node"] == "a"
+    assert NodePool(Settings(data_dir=tmp_path), nodes=[]).draining == set()
+
+
+def test_heartbeat_records_last_seen(tmp_path):
+    a = FakeNode("a")
+    app = make_app(tmp_path, [a], node_heartbeat=0.1)
+    with TestClient(app):
+        be = app.state.runner.pool.nodes[0]
+        end = time.time() + 5
+        while be.last_ok is None and time.time() < end:
+            time.sleep(0.05)
+        assert be.last_ok and ("GET", "/v1/info") in a.calls
+    assert app.state.runner.pool._hb_thread is None    # stopped on shutdown

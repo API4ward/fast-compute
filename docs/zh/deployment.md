@@ -62,6 +62,7 @@ sudo sh deploy/install-service.sh             # systemd 服务（只有 unit 文
 | `DOCKERSERVER_NODE_LOST_GRACE` | 120 | 节点失联多少秒后任务标记为 `lost` |
 | `DOCKERSERVER_QUEUE_RETRY` / `_QUEUE_TIMEOUT` | 5 / 3600 | 排队重试间隔 / 最长等待 |
 | `DOCKERSERVER_NODE_INFO_TTL` / `_NODE_POLL_INTERVAL` | 5 / 2 | 容量缓存 / 状态轮询（秒） |
+| `DOCKERSERVER_NODE_HEARTBEAT` | 30 | 管理后台 Nodes 页的节点健康探测间隔（秒，0 = 关闭） |
 
 修改后执行：`sudo systemctl restart dockerserver`。
 

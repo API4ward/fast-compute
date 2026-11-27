@@ -43,7 +43,7 @@ between files). Sites only serve files (nothing runs); a site sleeps after an id
 on the next visit within about a second.
 These tools only ever act on your own jobs and sites."""
 
-ADMIN_INSTRUCTIONS = f"""DockerServer administration: users, limits, credits and usage.
+ADMIN_INSTRUCTIONS = f"""DockerServer administration: users, limits, credits, usage and compute nodes.
 Admins cannot open, stop or read the logs of an individual user's job. To stop a user's
 activity use set_user_status(active=false) (blocks their tokens and new jobs; running jobs
 continue) or suspend_user (disables the account AND kills all their running jobs, which end
@@ -392,6 +392,20 @@ def build_admin_mcp(svc: Services, path: str = "/mcp-admin"):
     def usage_report(ctx: Context, start: datetime | None = None,
                      end: datetime | None = None) -> dict[str, Any]:
         return call(ctx, lambda db, a: _jsonable(svc.usage_report(db, a, start, end)))
+
+    @mcp.tool(description="Compute nodes: online/offline/draining, last seen, latency, capacity, "
+                          "used and free CPUs/memory as the node reports them, the jobs running "
+                          "there (metadata only), and 24 h job counts. Probes every node first.",
+              annotations=RO)
+    def list_nodes(ctx: Context) -> dict[str, Any]:
+        return call(ctx, lambda db, a: _jsonable(svc.admin_nodes(db, a)))
+
+    @mcp.tool(description="Drain a compute node (draining=true: it gets no new jobs, running jobs "
+                          "finish normally) or put it back into service (draining=false).",
+              annotations=ToolAnnotations(destructiveHint=False, idempotentHint=True,
+                                          openWorldHint=False))
+    def set_node_draining(ctx: Context, name: str, draining: bool) -> dict[str, Any]:
+        return call(ctx, lambda db, a: svc.set_node_draining(a, name, draining))
 
     @mcp.tool(description="Issue a new access token for a user (shown once).")
     def issue_token(ctx: Context, user_id: int, name: str = "mcp") -> dict[str, Any]:

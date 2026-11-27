@@ -94,12 +94,17 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
             runner.recover()
             await anyio.to_thread.run_sync(svc.sites.recover)
         svc.sites.start()
+        pool_ = getattr(runner, "pool", None)
+        if pool_ is not None:
+            pool_.start_heartbeat()
         try:
             async with AsyncExitStack() as stack:
                 for server, _ in mcp_routes.values():
                     await stack.enter_async_context(server.session_manager.run())
                 yield
         finally:
+            if pool_ is not None:
+                pool_.stop_heartbeat()
             svc.sites.shutdown()
             await site_http.aclose()
             caddy.close()
@@ -346,6 +351,22 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     @app.get("/admin/caddy/backups/{name}", response_class=PlainTextResponse)
     def caddy_backup(name: str, _: Admin):
         return caddy.get_backup(name)
+
+    # ----- admin: compute nodes -----
+    @app.get("/admin/nodes")
+    def admin_nodes(db: DB, admin: Admin, probe: bool = True):
+        """Compute nodes: online/offline, capacity and usage, running jobs (metadata), 24 h counts.
+        probe=true (default) asks every node for fresh /v1/info first."""
+        return svc.admin_nodes(db, admin, probe)
+
+    @app.post("/admin/nodes/{name}/drain")
+    def drain_node(name: str, admin: Admin):
+        """Stop sending new jobs to this node; running jobs finish normally."""
+        return svc.set_node_draining(admin, name, True)
+
+    @app.post("/admin/nodes/{name}/undrain")
+    def undrain_node(name: str, admin: Admin):
+        return svc.set_node_draining(admin, name, False)
 
     # ----- admin -----
     @app.get("/admin/sites")

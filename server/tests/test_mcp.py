@@ -75,7 +75,7 @@ USER_TOOLS = {"submit_job", "list_jobs", "get_job", "get_job_logs", "stop_job", 
               "list_sites", "list_site_files", "delete_site_file", "delete_site"}
 ADMIN_TOOLS = {"list_users", "create_user", "set_user_status", "set_user_limits", "suspend_user",
                "list_user_jobs", "add_credits", "get_ledger", "usage_report", "issue_token", "revoke_token",
-               "delete_user", "list_sites"}
+               "delete_user", "list_sites", "list_nodes", "set_node_draining"}
 
 
 async def _names(s):

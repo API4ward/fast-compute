@@ -63,6 +63,7 @@ the log shows `config file: …/.env (loaded)`. Template with every key: `server
 | `DOCKERSERVER_NODE_LOST_GRACE` | 120 | seconds unreachable before a job becomes `lost` |
 | `DOCKERSERVER_QUEUE_RETRY` / `_QUEUE_TIMEOUT` | 5 / 3600 | retry interval / max wait for capacity |
 | `DOCKERSERVER_NODE_INFO_TTL` / `_NODE_POLL_INTERVAL` | 5 / 2 | capacity cache / status poll (s) |
+| `DOCKERSERVER_NODE_HEARTBEAT` | 30 | health probe of every node for the admin Nodes tab (s, 0 = off) |
 
 Apply changes: `sudo systemctl restart dockerserver`.
 
