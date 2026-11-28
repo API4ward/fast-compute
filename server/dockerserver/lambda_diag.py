@@ -4,7 +4,8 @@
   concurrency -> async retries -> S3 put/get/delete -> pre-signed PUT/GET over HTTPS (what
   the function does). Each step has its own try/except and short AWS timeouts (connect 5 s,
   read 10 s, 1 retry); a step whose prerequisite failed is skipped. Common botocore errors
-  become plain hints. Messages never contain secrets or pre-signed URLs.
+  become plain hints. Messages never contain secrets or pre-signed URLs, and neither does the
+  server log (httpx logs each request's URL: see hide_signed_urls()).
 * AdminTestJobs: a fixed diagnostic command (never admin-supplied) run through the node's
   backend (LambdaBackend.start/status/logs/cleanup) in a thread. Not a user Job, not billed;
   it holds one concurrency slot while it runs. The last 20 are kept in memory.
@@ -14,6 +15,7 @@ boto3 is imported only when one of these runs (it is large; the server has littl
 import copy
 import importlib.metadata
 import importlib.util
+import logging
 import os
 import re
 import secrets
@@ -34,6 +36,7 @@ from .services import ServiceError
 TEST_TIMEOUT = 120                  # test job limit (s), or the node's longest job if shorter
 TEST_LOG_TAIL = 64 * 1024
 TEST_KEEP = 20
+TEST_UNREADABLE = 60                # a test job gives up when S3 stays unreadable this long (s)
 INTERNET_PROBE = ("1.1.1.1", 443)   # the test job's internet probe (TCP connect)
 NET_PROBE_TIMEOUT = 3.0
 LOG_MAX_EVENTS = 300
@@ -120,11 +123,36 @@ _URL_QUERY = re.compile(r"(https?://[^\s?\"'<>]+)\?[^\s\"'<>]*")
 _KEY_ID = re.compile(r"\b((?:AKIA|ASIA)[A-Z0-9]{12,124})\b")
 
 
-def clean(text: str, limit: int = 500) -> str:
-    """One line, no pre-signed URL query strings, access key IDs masked, at most `limit` chars."""
+def clean(text: str, limit: int | None = 500) -> str:
+    """One line, no pre-signed URL query strings, access key IDs masked, at most `limit` chars
+    (None: any length)."""
     text = _URL_QUERY.sub(r"\1?…", " ".join(str(text).split()))
     text = _KEY_ID.sub(lambda m: mask_key_id(m.group(1)), text)
-    return text if len(text) <= limit else text[:limit - 1] + "…"
+    return text if limit is None or len(text) <= limit else text[:limit - 1] + "…"
+
+
+class _SignedUrlFilter(logging.Filter):
+    """httpx logs every request at INFO with its whole URL; a pre-signed URL's query holds the
+    access key ID, a signature that is valid for minutes and maybe a session token."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        safe = clean(msg, limit=None)
+        if safe != msg:
+            record.msg, record.args = safe, ()
+        return True
+
+
+def hide_signed_urls():
+    """Clean httpx's log records (see _SignedUrlFilter) before any handler sees them. Runs when
+    this module is imported, so the app (api.create_app imports it through admin_settings) and
+    the tests have it before any pre-signed URL is fetched."""
+    httpx_log = logging.getLogger("httpx")
+    if not any(isinstance(f, _SignedUrlFilter) for f in httpx_log.filters):
+        httpx_log.addFilter(_SignedUrlFilter())
+
+
+hide_signed_urls()
 
 
 def error_code(e: BaseException) -> tuple[str | None, str]:
@@ -271,8 +299,7 @@ class AwsClients:
 
 
 SOURCE_TEXT = {"profile": "AWS profile from server/.env", "admin": "the access key saved in Settings",
-               "env": "boto3's default chain (AWS_* in server/.env, instance role, ...)",
-               "none": "none configured"}
+               "env": "boto3's default chain (AWS_* in server/.env, instance role, ...)"}
 
 
 def check_credentials(clients: AwsClients) -> dict:
@@ -352,8 +379,11 @@ def diagnose(cfg: dict, clients: AwsClients, node: str | None = None) -> dict:
         r = clients("sts").get_caller_identity()
         arn = str(r.get("Arn") or "?")
         via = clients.via()
-        src = SOURCE_TEXT.get(clients.source, clients.source)
-        if clients.source == "profile":
+        # "none" (nothing configured that can be seen here), yet AWS answered: boto3's default
+        # chain found credentials, e.g. an instance role (as check_credentials() reports it)
+        source = "env" if clients.source == "none" else clients.source
+        src = SOURCE_TEXT.get(source, source)
+        if source == "profile":
             src = f"AWS profile {cfg.get('profile')!r} from server/.env"
         detail = f"account {r.get('Account')}, {arn}; credentials: {src}" + (f" [{via}]" if via else "")
         if arn.endswith(":root"):
@@ -417,8 +447,9 @@ def diagnose(cfg: dict, clients: AwsClients, node: str | None = None) -> dict:
         return "ok", f"reserved concurrency {rc}; this node starts up to {mc} jobs at once", None
 
     def s_retries():
+        # the function as configured: an alias or version has its own async invoke settings
         fix = ("a retried job could run twice: set MaximumRetryAttempts to 0 (deploy.sh does it; or "
-               f"aws lambda put-function-event-invoke-config --function-name {function_name(fn)} "
+               f"aws lambda put-function-event-invoke-config --function-name {shlex.quote(fn)} "
                "--maximum-retry-attempts 0)")
         try:
             r = clients("lambda").get_function_event_invoke_config(FunctionName=fn)
@@ -460,8 +491,8 @@ def diagnose(cfg: dict, clients: AwsClients, node: str | None = None) -> dict:
                 return ("warn", f"put, get and delete work in s3://{bucket}/{prefix}, but a job file that "
                                 "is not written yet reads as 403 AccessDenied instead of 404",
                         "the server's IAM policy lacks s3:ListBucket on the bucket (deploy.sh before "
-                        "Settings): until the function reports, jobs log warnings, and a job whose "
-                        f"function never starts ends as lost instead of with a clear error; {DEPLOY_HINT}")
+                        "Settings). Jobs still run: the server reads a 403 before the function's first "
+                        f"report as \"not written yet\". So that S3 answers 404: {DEPLOY_HINT}")
         return "ok", f"put, get and delete work in s3://{bucket}/{prefix}", None
 
     def s_presigned():
@@ -697,8 +728,17 @@ class AdminTestJobs:
                     st = b.status(h)
                 except BackendError as e:
                     if not warned:
-                        self._note(state, t0, f"status not readable yet ({clean(str(e), 200)})")
+                        why = h.extra.get("read_error") or str(e)
+                        self._note(state, t0, f"status not readable yet ({clean(why, 200)})")
                         warned = True
+                # S3 errors (wrong bucket or region, no route to S3): say why instead of waiting
+                # out the whole limit; a real job ends as "lost" after NODE_LOST_GRACE likewise
+                down = time.time() - h.unreachable_since if h.unreachable_since else 0
+                if down > TEST_UNREADABLE:
+                    b.kill(h)
+                    why = clean(h.extra.get("read_error") or "status unavailable", 300)
+                    raise BackendError(f"the job's status could not be read from S3 for {int(down)} s "
+                                       f"({why}); run Diagnose")
                 if not reported and h.extra.get("first_seen"):
                     reported = True
                     first = round(h.extra["first_seen"] - h.extra.get("invoked", h.extra["first_seen"]), 2)

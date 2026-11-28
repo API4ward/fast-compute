@@ -20,9 +20,9 @@ from test_nodes import FakeNode, big_user, wait_job  # noqa: E402
 
 from dockerserver.api import create_app  # noqa: E402
 from dockerserver.auth import issue_token  # noqa: E402
-from dockerserver.backends import RemoteNodeBackend  # noqa: E402
+from dockerserver.backends import JobSpec, RemoteNodeBackend  # noqa: E402
 from dockerserver.config import Settings, parse_nodes  # noqa: E402
-from dockerserver.lambda_backend import LambdaBackend  # noqa: E402
+from dockerserver.lambda_backend import LambdaBackend, function_name  # noqa: E402
 from dockerserver.models import User  # noqa: E402
 from dockerserver.scheduler import NodePool, make_backend  # noqa: E402
 
@@ -169,6 +169,7 @@ def test_dead_invocation_is_detected(tmp_path, s3):
         j = wait_job(c, u["token"], c.post("/jobs", headers=auth(u["token"]),
                                            data={"command": "true"}).json()["id"])
         assert j["status"] == "error" and "did not start" in j["error"]
+        app.state.runner.wait(j["id"], 10)   # the slot is freed in cleanup(), after billing
     assert not be._inflight
 
 
@@ -304,3 +305,66 @@ def test_recovered_job_that_never_reports_times_out(s3):
     time.sleep(0.4)
     st = be._poll(h)
     assert st.finished and "did not start the job within" in st.error
+
+
+def test_running_jobs_keep_the_timeouts_they_started_with(s3):
+    """A change of start_timeout / stale_after (reconfigure(), from Settings) is for new jobs:
+    a job waiting for its cold start, or quiet for a while, keeps its own values."""
+    fake = FakeLambda()
+    fake.hang = True                       # the invocation never reports (e.g. throttled)
+    be = make_lambda(s3, fake, start_timeout=300, stale_after=60)
+    spec = JobSpec(1, "python:3.12-slim", "true", 1, 256, 60, False)
+    h = be.start(spec, b"")
+    assert (h.extra["start_timeout"], h.extra["stale_after"]) == (300, 60)
+    h.extra["invoked"] -= 45               # invoked 45 s ago, no report yet
+    be.reconfigure(start_timeout=30, stale_after=20)
+    st = be._poll(h)
+    assert not st.finished and st.node_status == "preparing"
+    s3.put_object(Bucket=BUCKET, Key=f"fast-compute/jobs/{h.id}/status.json",
+                  Body=json.dumps({"status": "running"}).encode())
+    assert be._poll(h).node_status == "running"
+    h.extra["changed"] -= 30               # quiet for longer than the new stale_after, not its own
+    assert not be._poll(h).finished
+    h2 = be.start(JobSpec(2, "python:3.12-slim", "true", 1, 256, 60, False), b"")
+    assert (h2.extra["start_timeout"], h2.extra["stale_after"]) == (30, 20)
+    h2.extra["invoked"] -= 45
+    st = be._poll(h2)
+    assert st.finished and st.error == "the Lambda function did not start the job within 30 s"
+    be.cleanup(h)
+    be.cleanup(h2)
+
+
+def test_function_name_of_every_form_lambda_accepts():
+    for f in ("fc-test", "fc-test:live", "fc-test:7", "123456789012:function:fc-test",
+              "123456789012:function:fc-test:live", "arn:aws:lambda:eu-west-2:123456789012:function:fc-test",
+              "arn:aws-cn:lambda:cn-north-1:123456789012:function:fc-test:$LATEST"):
+        assert function_name(f) == "fc-test", f
+
+
+def test_client_built_while_the_saved_key_changes_is_not_kept(monkeypatch):
+    """The admin saves a new access key (reset_clients()) while a job thread builds a client
+    from the old one: that client must not stay cached."""
+    old, new = "AKIAOLDKEY0000000001", "AKIANEWKEY0000000002"
+    key = [old]
+    be = None
+
+    class Client:
+        def __init__(self, service, key_id):
+            self.service, self.key_id = service, key_id
+
+    class Session:                         # boto3's, as LambdaBackend._session() makes it
+        def __init__(self, region_name=None, aws_access_key_id=None, aws_secret_access_key=None):
+            self.key_id = aws_access_key_id
+
+        def client(self, service, **kw):
+            if self.key_id == old:         # the change lands while this client is built
+                key[0] = new
+                be.reset_clients()
+            return Client(service, self.key_id)
+    monkeypatch.setattr(boto3.session, "Session", Session)
+    be = LambdaBackend("aws", function="fc-test", bucket=BUCKET, region="eu-west-2",
+                       credentials=lambda: {"aws_access_key_id": key[0], "aws_secret_access_key": "s" * 40})
+    assert be.s3.key_id == new and be._s3.key_id == new
+    key[0] = old
+    assert be.lam.key_id == new and be._lambda.key_id == new
+    assert be.s3.key_id == new             # rebuilt after that second reset

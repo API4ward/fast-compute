@@ -76,12 +76,19 @@ logged. Back up `.env` together with `data/`: without that key, saved secrets mu
 again. The `server/.env` settings keep working; where both exist, Settings wins (except a Lambda
 node's own `profile`, below).
 
+**Upgrading from the interim "AWS Lambda" tab**: on the first start after the upgrade, the server
+carries over the AWS access key and the Lambda nodes saved on that tab (`server/data/lambda.json`),
+once. For 30 days a notice at the top of Settings lists what was carried over and what was not,
+and why (for example, an access key was already saved here). `lambda.json` is left in place and
+can be deleted afterwards.
+
 ### AWS account
 
 The access key the server uses for every Lambda node: invoking the function, job files in S3,
 reading the function's logs. `lambda-node/deploy.sh` creates an IAM user for it
-(`fast-compute-server`) with only those permissions; create its key with
-`aws iam create-access-key --user-name fast-compute-server`.
+(`fast-compute-server`) with only those permissions: a managed policy `fast-compute-<function>`
+for each function it deploys (a re-run replaces the inline policy that an older `deploy.sh`
+used). Create the user's key with `aws iam create-access-key --user-name fast-compute-server`.
 
 - The card shows where the credentials come from — **Saved here**, **server/.env** or **Not
   configured** — with the key ID masked (`AKIA…WXYZ`), and whether boto3 is installed (if not:
@@ -114,8 +121,9 @@ active jobs and draining. Nodes from `DOCKERSERVER_NODES` are marked **server/.e
   **Add node** saves it and the node takes jobs at once.
 - **Edit**: max concurrency, images, network, timeouts and fresh sandbox can change while jobs run
   (new jobs use them). Function, bucket, region and prefix change only on an idle node: **Drain**
-  it on the Nodes tab, wait for its jobs to finish, then save. The name cannot change (delete and
-  add again). **Delete** is refused while jobs run; it does not touch the function or bucket in AWS.
+  it on the Nodes tab, wait for its jobs to finish, save, then click **Resume** on the Nodes tab
+  (the node stays drained after saving). The name cannot change (delete and add again).
+  **Delete** is refused while jobs run; it does not touch the function or bucket in AWS.
 - Add each function only once (here or in `.env`): every node counts its own concurrency slots.
 
 Debugging tools, on every Lambda node (also the `.env` ones):
@@ -171,11 +179,11 @@ function role's credentials, so a job could then also write to (only) that log g
 The product-advisor chat on `/` (see [below](#homepage-and-product-advisor)). The card shows the
 source (**Saved here** / **server/.env** / **Not configured**) and the mode (LLM answers or
 built-in FAQ only). Fields: *Base URL* (any OpenAI-compatible API), *Model* (empty = the `.env`
-value; with no model anywhere the advisor uses the FAQ), *Max tokens per answer* (16–32000), *API
-key* (never shown; leave empty to keep the current one, or remove the saved one). Saved values
-override `DOCKERSERVER_SALES_BASE_URL`, `_MODEL`, `_MAX_TOKENS` and `_API_KEY` field by field, at
-once (a value equal to the `.env` one is not saved, so later `.env` changes still apply);
-**Reset to server/.env** drops them. **Test** asks one
+value; with no model anywhere the advisor uses the FAQ), *Max tokens per answer* (16–32000;
+empty = the `.env` value), *API key* (never shown; leave empty to keep the current one, or remove
+the saved one). Saved values override `DOCKERSERVER_SALES_BASE_URL`, `_MODEL`, `_MAX_TOKENS` and
+`_API_KEY` field by field, at once (a value equal to the `.env` one is not saved, so later `.env`
+changes still apply); **Reset to server/.env** drops them. **Test** asks one
 question with the current settings (no visitor rate limit) and shows the reply, mode, time and
 the provider's error if any.
 

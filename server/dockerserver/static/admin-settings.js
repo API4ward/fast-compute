@@ -8,13 +8,15 @@
 const SET_PAT = {
   name: "[A-Za-z0-9][A-Za-z0-9_.\\-]{0,39}",
   fn: "[A-Za-z0-9_\\-]{1,64}|arn:aws[a-z\\-]*:lambda:[a-z0-9\\-]+:[0-9]{12}:function:[A-Za-z0-9_\\-]{1,64}(:[A-Za-z0-9$_\\-]+)?",
-  fnName: "[A-Za-z0-9_\\-]{1,64}",
+  deployFn: "[a-z0-9]+([_\\-][a-z0-9]+)*",
   bucket: "[a-z0-9][a-z0-9.\\-]{1,61}[a-z0-9]",
   region: "[a-z]{2}(-gov|-iso[a-z]*)?-[a-z]+-[0-9]",
   prefix: "fast-compute\\/[A-Za-z0-9!_.*'\\(\\)\\/\\-]{0,187}",
 };
 const REGION_RE = /^[a-z]{2}(-gov|-iso[a-z]*)?-[a-z]+-\d$/;
-const FN_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+// deploy.sh also names the ECR repository (lowercase letters and digits joined by single separators) and
+// the IAM role "<name>-exec" (at most 64 characters) after the function: stricter than Lambda's own rule.
+const DEPLOY_FN_RE = /^(?=.{2,59}$)[a-z0-9]+(?:[_-][a-z0-9]+)*$/;
 const IMAGE_RE = /^[a-z0-9][a-z0-9._\/:@-]{0,199}$/;
 const AWS_REGIONS = ["eu-west-2", "eu-west-1", "eu-west-3", "eu-central-1", "eu-central-2", "eu-north-1", "eu-south-1",
   "us-east-1", "us-east-2", "us-west-1", "us-west-2", "ca-central-1", "sa-east-1", "ap-southeast-1", "ap-southeast-2",
@@ -24,10 +26,13 @@ const SET = {
   data: null,          // last GET /admin/settings
   outs: new Map(),     // node name -> { diag, test, logs } result areas, kept across re-renders
   polls: new Map(),    // node name -> { id, timer } of a running test job
-  form: null,          // { node: row | null, prefill: {} } while the add / edit form is open
+  form: null,          // { node: row | null, prefill: {}, adv: bool } while the add / edit form is open;
+                       // prefill holds what was typed, so a re-render shows it again
+  edits: {},           // "aws" / "advisor" -> { field name: value } typed there but not saved
   account: null,       // AWS account id from the last successful credentials check
   focus: null,         // node card to scroll to after the next render (Nodes tab -> Settings)
 };
+const EDIT_CARDS = { aws: "set-aws", advisor: "set-advisor" };
 
 // ---------- small builders ----------
 // Element.append() would print null / undefined as text: these skip them (like el()).
@@ -98,13 +103,16 @@ function diagView(r) {
 }
 
 // ---------- load / render ----------
-async function loadSettings() {
+// Every form keeps what was typed across a reload (tab switch, Refresh, a save in another card);
+// `fresh` ("aws" | "advisor") is the card whose own save or remove caused it: it shows the saved values.
+async function loadSettings({ fresh } = {}) {
   renderDeploy();
   const err = clear($("settings-error"));
   let d;
   try {
     d = await api("/admin/settings");
   } catch (e) {
+    takeEdits(fresh);
     SET.data = null;
     addKids(err, alertBox("err", t("set.loadFailed", { msg: errText(e) })));
     for (const [id, key] of [["set-aws", "set.aws.title"], ["set-lambda", "set.l.title"], ["set-advisor", "set.adv.title"]])
@@ -112,17 +120,39 @@ async function loadSettings() {
     syncDeploy();
     return;
   }
+  takeEdits(fresh);
   SET.data = d;
   addKids(err, importNotice(d.imported));
   renderAws(d.aws || {});
   renderLambda();
   renderAdvisor(d.advisor || {});
+  putEdits();
   syncDeploy();
   if (SET.focus) {
     const card = $("lnode-" + SET.focus);
     SET.focus = null;
     if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+}
+
+// The AWS and advisor fields whose value differs from the one the server sent (el() sets it as the
+// default value), so a re-render can put them back. The card whose own save or remove caused it keeps
+// only the advisor's test question; a card without a form (the last load failed) keeps what was taken.
+function takeEdits(fresh) {
+  for (const [card, id] of Object.entries(EDIT_CARDS)) {
+    if (!$(id).querySelector("form")) continue;
+    SET.edits[card] = Object.fromEntries(
+      [...$(id).querySelectorAll(card === fresh ? "textarea[name=question]" : "input[name], textarea[name]")]
+        .filter(x => (x.type === "checkbox" ? x.checked !== x.defaultChecked : x.value !== x.defaultValue))
+        .map(x => [x.name, x.type === "checkbox" ? x.checked : x.value]));
+  }
+}
+function putEdits() {
+  for (const [card, id] of Object.entries(EDIT_CARDS))
+    for (const [name, v] of Object.entries(SET.edits[card] || {})) {
+      const x = $(id).querySelector(`[name="${name}"]`);
+      if (x) x[x.type === "checkbox" ? "checked" : "value"] = v;
+    }
 }
 
 // What was carried over from the interim "AWS Lambda" page's lambda.json (shown for 30 days).
@@ -162,7 +192,7 @@ function renderAws(a) {
     remove.disabled = true;
     try {
       await api("/admin/settings/aws", { method: "DELETE" });
-      await loadSettings();
+      await loadSettings({ fresh: "aws" });
       showMsg($("set-aws"), t("set.aws.removed"), true);
       refreshNodesTab();
     } catch (e) { remove.disabled = false; showMsg(out, errText(e)); }
@@ -182,7 +212,7 @@ function renderAws(a) {
     try {
       await api("/admin/settings/aws", { method: "PUT", body: kid ? { access_key_id: kid, secret_access_key: sec, region: reg } : { region: reg } });
       secret.value = "";
-      await loadSettings();
+      await loadSettings({ fresh: "aws" });
       showMsg($("set-aws"), kid ? t("set.aws.savedMsg") : t("set.aws.regionMsg"), true);
       if (kid) refreshNodesTab();
     } catch (e) { showMsg(out, errText(e)); }
@@ -225,6 +255,8 @@ async function checkAws(btn, out) {
 function renderLambda() {
   const box = clear($("set-lambda"));
   const nodes = (SET.data && SET.data.lambda_nodes) || [];
+  // an open edit form starts from the node as the server has it now (what was typed stays on top)
+  if (SET.form && SET.form.node) SET.form.node = nodes.find(n => n.name === SET.form.node.name) || SET.form.node;
   addKids(box,
     el("div", { class: "card-head" }, el("h2", {}, t("set.l.title")),
       el("div", { class: "end" }, el("button", { class: "btn primary", type: "button", onclick: () => openNodeForm(null) }, t("set.l.add")))),
@@ -291,11 +323,12 @@ async function testNode(name, btn) {
   try {
     const st = await api(`/admin/settings/lambda/nodes/${enc(name)}/test-job`, { method: "POST" });
     renderTest(name, st);
-    if (!testDone(st) && st.id != null) pollTest(name, st.id, 0);
+    if (!testDone(st) && st.id != null) pollTest(name, st.id, 0, st);
   } catch (e) { setKids(slot, outHead(t("set.test.title"), slot), alertBox("err", errText(e))); }
   finally { btn.disabled = false; }
 }
-function pollTest(name, id, fails) {
+// `last`: the latest state the server sent, shown as ended if the page stops checking.
+function pollTest(name, id, fails, last) {
   const p = { id, timer: null };
   p.timer = setTimeout(async () => {
     let st;
@@ -303,14 +336,14 @@ function pollTest(name, id, fails) {
       st = await api(`/admin/settings/lambda/tests/${enc(id)}`);
     } catch (e) {
       if (SET.polls.get(name) !== p) return;
-      if (e.status !== 404 && fails < 3) return pollTest(name, id, fails + 1);   // a network blip: try again
-      SET.polls.delete(name);
-      addKids(nodeOut(name).test, alertBox("err", errText(e)));
+      if (e.status !== 404 && fails < 3) return pollTest(name, id, fails + 1, last);   // a network blip: try again
+      SET.polls.delete(name);   // 404: the server restarted (tests are kept in memory), or it kept failing
+      renderTest(name, { ...last, phase: "error", status: null, error: t("set.test.gaveUp", { msg: errText(e) }) });
       return;
     }
     if (SET.polls.get(name) !== p) return;    // closed or replaced meanwhile
     renderTest(name, st);
-    if (testDone(st)) SET.polls.delete(name); else pollTest(name, id, 0);
+    if (testDone(st)) SET.polls.delete(name); else pollTest(name, id, 0, st);
   }, 1500);
   SET.polls.set(name, p);
 }
@@ -332,7 +365,8 @@ function renderTest(name, st) {
       kvRow(t("set.test.total"), secs(tm.total_s)),
       kvRow(t("set.test.started"), st.started_at ? fmtTime(st.started_at) : "–")) : null,
     st.error ? alertBox("err", st.error) : null,
-    st.logs ? el("pre", { class: "logs" }, st.logs) : done ? el("p", { class: "muted" }, t("set.test.noOutput")) : null);
+    // "No output." only for a test the server reports as ended (not when the page stopped checking)
+    st.logs ? el("pre", { class: "logs" }, st.logs) : done && st.finished_at ? el("p", { class: "muted" }, t("set.test.noOutput")) : null);
 }
 
 // ----- function logs (CloudWatch) -----
@@ -383,7 +417,7 @@ function openNodeForm(node, prefill) {
 function closeNodeForm() { SET.form = null; renderLambda(); }
 
 function nodeForm() {
-  const { node, prefill } = SET.form;
+  const st = SET.form, { node, prefill } = st;
   const defs = (SET.data && SET.data.lambda_defaults) || {};
   const v = Object.assign({ prefix: "fast-compute/jobs/", images: ["python:3.12-slim"], max_concurrency: 10, network: "none",
     start_timeout: 300, stale_after: 60, fresh_sandbox: true }, defs, node || {}, prefill || {});
@@ -397,7 +431,7 @@ function nodeForm() {
       el("option", { value: "none", selected: v.network !== "internet" }, t("set.net.none")),
       el("option", { value: "internet", selected: v.network === "internet" }, t("set.net.internet"))),
     max_concurrency: inp("max_concurrency", { type: "number", min: "1", max: "1000", step: "1", required: true, value: v.max_concurrency }),
-    images: inp("images", { value: (v.images || []).join(", "), placeholder: "python:3.12-slim" }),
+    images: inp("images", { value: Array.isArray(v.images) ? v.images.join(", ") : v.images || "", placeholder: "python:3.12-slim" }),
     prefix: inp("prefix", { value: v.prefix || "", pattern: SET_PAT.prefix, maxlength: "200", placeholder: "fast-compute/jobs/" }),
     start_timeout: inp("start_timeout", { type: "number", min: "30", max: "900", step: "1", value: v.start_timeout }),
     stale_after: inp("stale_after", { type: "number", min: "20", max: "600", step: "1", value: v.stale_after }),
@@ -407,12 +441,13 @@ function nodeForm() {
   const setNetHelp = () => { netHelp.textContent = f.network.value === "internet" ? t("set.net.internetHelp") : t("set.net.noneHelp"); };
   f.network.addEventListener("change", setNetHelp);
   setNetHelp();
-  const adv = el("details", { class: "adv" }, el("summary", {}, t("set.l.advanced")),
+  const adv = el("details", { class: "adv", open: !!st.adv }, el("summary", {}, t("set.l.advanced")),
     el("div", { class: "form-grid" },
       field(t("set.l.prefix"), f.prefix, t("set.l.prefixHelp")),
       field(t("set.l.startTimeout"), f.start_timeout, t("set.l.startTimeoutHelp")),
       field(t("set.l.staleAfter"), f.stale_after, t("set.l.staleAfterHelp")),
       checkField(f.fresh_sandbox, t("set.l.fresh"), t("set.l.freshHelp"), "full")));
+  adv.addEventListener("toggle", () => { st.adv = adv.open; });
   const result = el("div", { class: "node-out" });
   const save = el("button", { class: "btn primary", type: "submit" }, node ? t("btn.save") : t("set.l.addSave"));
   const test = el("button", { class: "btn", type: "button" }, t("set.l.testSettings"));
@@ -430,6 +465,12 @@ function nodeForm() {
     adv,
     el("div", { class: "form-actions" }, save, test, el("button", { class: "btn ghost", type: "button", onclick: closeNodeForm }, t("btn.cancel"))),
     result);
+  // What is typed goes into prefill (applied last above), so a re-render of the card shows it again.
+  const keep = () => {
+    st.prefill = Object.fromEntries(Object.entries(f).map(([k, x]) => [k, x.type === "checkbox" ? x.checked : x.value]));
+  };
+  form.addEventListener("input", keep);
+  form.addEventListener("change", keep);
   const images = () => f.images.value.split(/[\s,]+/).filter(Boolean);
   const validate = () => {
     const imgs = images();
@@ -437,17 +478,13 @@ function nodeForm() {
     if (adv.querySelector(":invalid")) adv.open = true;
     return form.reportValidity();
   };
-  const body = () => {
-    const b = { name: f.name.value.trim(), function: f.function.value.trim(), bucket: f.bucket.value.trim(),
-      region: f.region.value.trim(), network: f.network.value, max_concurrency: Number(f.max_concurrency.value),
-      fresh_sandbox: f.fresh_sandbox.checked };
-    const imgs = images();
-    if (imgs.length) b.images = imgs;
-    if (f.prefix.value.trim()) b.prefix = f.prefix.value.trim();
-    if (f.start_timeout.value !== "") b.start_timeout = Number(f.start_timeout.value);
-    if (f.stale_after.value !== "") b.stale_after = Number(f.stale_after.value);
-    return b;
-  };
+  // An empty images / prefix / timeout field means the default, on Add and on Edit alike:
+  // the server fills in [], "" and null from its defaults.
+  const optNum = x => (x.value === "" ? null : Number(x.value));
+  const body = () => ({ name: f.name.value.trim(), function: f.function.value.trim(), bucket: f.bucket.value.trim(),
+    region: f.region.value.trim(), network: f.network.value, max_concurrency: Number(f.max_concurrency.value),
+    images: images(), prefix: f.prefix.value.trim(), start_timeout: optNum(f.start_timeout), stale_after: optNum(f.stale_after),
+    fresh_sandbox: f.fresh_sandbox.checked });
   form.addEventListener("submit", async ev => {
     ev.preventDefault();
     if (!validate()) return;
@@ -501,7 +538,7 @@ function renderDeploy() {
   const inp = (name, attrs) => el("input", Object.assign({ name, spellcheck: "false", autocomplete: "off" }, attrs));
   const f = {
     region: inp("region", { value: "eu-west-2", list: "aws-regions", pattern: SET_PAT.region }),
-    fn: inp("function", { value: "fast-compute-job", pattern: SET_PAT.fnName }),
+    fn: inp("function", { value: "fast-compute-job", pattern: SET_PAT.deployFn, minlength: "2", maxlength: "59" }),
     mem: inp("memory", { type: "number", min: "128", max: "10240", step: "1", value: "2048" }),
     timeout: inp("timeout", { type: "number", min: "60", max: "900", step: "1", value: "900" }),
     network: el("select", { name: "network" },
@@ -517,7 +554,7 @@ function renderDeploy() {
   const update = () => {
     const region = f.region.value.trim(), fn = f.fn.value.trim();
     const mem = Number(f.mem.value), to = Number(f.timeout.value), conc = Number(f.conc.value);
-    const checks = [[f.region, REGION_RE.test(region)], [f.fn, FN_NAME_RE.test(fn)],
+    const checks = [[f.region, REGION_RE.test(region)], [f.fn, DEPLOY_FN_RE.test(fn)],
       [f.mem, Number.isInteger(mem) && mem >= 128 && mem <= 10240], [f.timeout, Number.isInteger(to) && to >= 60 && to <= 900],
       [f.conc, Number.isInteger(conc) && conc >= 1 && conc <= 1000]];
     for (const [input, ok] of checks) input.setAttribute("aria-invalid", ok ? "false" : "true");
@@ -544,7 +581,7 @@ function renderDeploy() {
     el("p", { class: "card-desc" }, tr("set.dep.desc")),
     el("div", { class: "form-grid" },
       field(t("set.dep.region"), f.region),
-      field(t("set.dep.function"), f.fn),
+      field(t("set.dep.function"), f.fn, t("set.dep.functionHelp")),
       field(t("set.dep.memory"), f.mem, t("set.dep.memoryHelp")),
       field(t("set.dep.timeout"), f.timeout, t("set.dep.timeoutHelp")),
       el("label", { class: "field" }, el("span", {}, t("set.l.network")), f.network, el("span", { class: "help" }, t("set.dep.networkHelp"))),
@@ -573,20 +610,24 @@ function renderAdvisor(a) {
   const maxTok = el("input", { name: "max_tokens", type: "number", min: "16", max: "32000", step: "1", value: a.max_tokens || 800 });
   const key = el("input", { name: "api_key", type: "password", autocomplete: "new-password",
     placeholder: a.has_api_key ? t("set.adv.keyKeep") : t("set.adv.keyNone") });
-  const dropKey = a.source === "admin" && a.has_api_key ? el("input", { type: "checkbox", name: "drop_key" }) : null;
+  // only a key saved here can be removed here (has_api_key is also true for a server/.env key)
+  const dropKey = (a.saved || []).includes("api_key") ? el("input", { type: "checkbox", name: "drop_key" }) : null;
   const out = el("div");
   const save = el("button", { class: "btn primary", type: "submit" }, t("btn.save"));
   const reset = a.source === "admin" ? el("button", { class: "btn danger", type: "button", onclick: async () => {
     if (!confirm(t("set.adv.confirmReset"))) return;
     reset.disabled = true;
-    try { await api("/admin/settings/advisor", { method: "DELETE" }); await loadSettings(); showMsg($("set-advisor"), t("set.adv.resetDone"), true); }
-    catch (e) { reset.disabled = false; showMsg(out, errText(e)); }
+    try {
+      await api("/admin/settings/advisor", { method: "DELETE" });
+      await loadSettings({ fresh: "advisor" });
+      showMsg($("set-advisor"), t("set.adv.resetDone"), true);
+    } catch (e) { reset.disabled = false; showMsg(out, errText(e)); }
   } }, t("set.adv.reset")) : null;
   const form = el("form", { novalidate: true },
     el("div", { class: "form-grid" },
       field(t("set.adv.base"), base, t("set.adv.baseHelp")),
       field(t("set.adv.model"), model, t("set.adv.modelHelp")),
-      field(t("set.adv.maxTokens"), maxTok),
+      field(t("set.adv.maxTokens"), maxTok, t("set.adv.maxTokensHelp")),
       field(t("set.adv.key"), key, a.has_api_key ? t("set.adv.keyHelpSet") : t("set.adv.keyHelp")),
       dropKey ? checkField(dropKey, t("set.adv.dropKey"), null, "full") : null),
     el("div", { class: "form-actions" }, save, reset), out);
@@ -604,16 +645,16 @@ function renderAdvisor(a) {
       await api("/admin/settings/advisor", { method: "PUT", body: {
         base_url: override(noSlash(base.value.trim()), env && noSlash(env.base_url || "https://api.openai.com/v1")),
         model: override(model.value.trim(), env && (env.model || "")),
-        max_tokens: override(Number(maxTok.value), env && env.max_tokens),
+        max_tokens: maxTok.value.trim() === "" ? null : override(Number(maxTok.value), env && env.max_tokens),
         api_key: k ? k : dropKey && dropKey.checked ? "" : null } });
       key.value = "";
-      await loadSettings();
+      await loadSettings({ fresh: "advisor" });
       showMsg($("set-advisor"), t("set.adv.saved"), true);
     } catch (e) { showMsg(out, errText(e)); }
     finally { save.disabled = false; }
   });
   // Test box: one question through the configured model, without the visitor rate limits.
-  const q = el("textarea", { rows: "2", maxlength: "500", style: "width:100%;resize:vertical", placeholder: t("set.adv.testPh") });
+  const q = el("textarea", { name: "question", rows: "2", maxlength: "500", style: "width:100%;resize:vertical", placeholder: t("set.adv.testPh") });
   const ask = el("button", { class: "btn", type: "submit" }, t("set.adv.ask"));
   const answer = el("div");
   const testForm = el("form", {}, field(t("set.adv.question"), q, null, "full"), el("div", { class: "form-actions", style: "margin-top:10px" }, ask), answer);

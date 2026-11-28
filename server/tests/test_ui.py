@@ -141,8 +141,8 @@ def _used_keys(text):
 
 
 def test_i18n_dictionaries_complete():
-    # every dictionary has the same keys in English and Chinese, without duplicates, and every
-    # literal key a page uses (t("..."), data-i18n="...") is defined for that page
+    # every dictionary has the same keys in English and Chinese, in the same order, without duplicates,
+    # and every literal key a page uses (t("..."), data-i18n="...") is defined for that page
     common = (STATIC / "common.js").read_text()
     pages = {"admin.html": ["admin-i18n.js", "admin-settings.js"], "user.html": ["welcome.js"],
              "welcome.html": ["welcome.js"]}
@@ -153,6 +153,7 @@ def test_i18n_dictionaries_complete():
             for en, zh in _dict_blocks(text):
                 assert len(en) == len(set(en)) and len(zh) == len(set(zh)), f"duplicate keys ({page})"
                 assert set(en) == set(zh), (page, sorted(set(en) ^ set(zh)))
+                assert en == zh, (page, next(f"{a} / {b}" for a, b in zip(en, zh) if a != b))
                 defined |= set(en)
         used = set().union(*(_used_keys(x) for x in [common] + texts))
         assert not used - defined, (page, sorted(used - defined))
@@ -211,6 +212,73 @@ def test_dashboards_build_dom_without_innerhtml(client):
         assert not html_sink.search(html), page
         # CSP default-src 'self': no external scripts, styles, fonts or images
         assert not re.search(r'(?:src|href)="(?:https?:)?//', html), page
+
+
+def _js_string(text, key):
+    """A JS string literal `key: "..."` of a file, unescaped (the SET_PAT patterns)."""
+    return re.search(rf'\n\s*{key}: "(.+?)",', text).group(1).replace("\\\\", "\\")
+
+
+def test_deploy_helper_function_name_rule():
+    # deploy.sh also names the ECR repository and the "<name>-exec" IAM role (64 characters at most) after
+    # the function, so the deploy helper takes only names all three accept; the node form keeps Lambda's
+    # own rule (any function name or an ARN). The page's regexes are checked here as written.
+    js = (STATIC / "admin-settings.js").read_text()
+    rule = re.compile(re.search(r"const DEPLOY_FN_RE = /(.+)/;", js).group(1))
+    attr = re.compile(f"(?:{_js_string(js, 'deployFn')})")     # the input's pattern, with minlength/maxlength
+    assert 'pattern: SET_PAT.deployFn, minlength: "2", maxlength: "59"' in js and "DEPLOY_FN_RE.test(fn)" in js
+    for name in ("fast-compute-job", "ab", "a1_b2-c3", "job2", "x" * 59):
+        assert rule.match(name) and attr.fullmatch(name), name
+    for name in ("FastCompute", "_job", "fast-compute-job-", "a", "fast--compute", "fast.compute", "fast compute",
+                 "x" * 60):
+        assert not rule.match(name), name
+        assert not (attr.fullmatch(name) and 2 <= len(name) <= 59), name
+    node_fn = re.compile(f"(?:{_js_string(js, 'fn')})")
+    for fn in ("FastCompute", "fast-compute-job", "arn:aws:lambda:eu-west-2:123456789012:function:fast-compute-job:live"):
+        assert node_fn.fullmatch(fn), fn
+
+
+def test_settings_forms_send_what_the_api_takes(client, admin_token):
+    js = (STATIC / "admin-settings.js").read_text()
+    # The advisor form sends an empty "max tokens" as null: the server/.env value, not saved here. It offers
+    # to remove the API key only when one is saved here ("saved"; has_api_key also counts a server/.env key).
+    a = client.put("/admin/settings/advisor", headers=auth(admin_token),
+                   json={"base_url": None, "model": "m-1", "max_tokens": None, "api_key": None}).json()
+    assert a["max_tokens"] == a["env"]["max_tokens"] and a["saved"] == ["model"]
+    assert 'max_tokens: maxTok.value.trim() === "" ? null :' in js
+    assert 'const dropKey = (a.saved || []).includes("api_key") ?' in js
+    # The node form sends empty images / prefix / timeouts as [] / "" / null, on Add and on Edit (where the
+    # server merges the body over the saved node): both mean the defaults.
+    from dockerserver.admin_settings import LAMBDA_DEFAULTS, validate_node
+    saved = {"name": "lam1", "function": "fast-compute-job", "bucket": "fast-compute-jobs-1-eu-west-2",
+             "region": "eu-west-2", "images": ["node:22-slim"], "prefix": "fast-compute/x/", "start_timeout": 120,
+             "stale_after": 30}
+    empty = {"images": [], "prefix": "", "start_timeout": None, "stale_after": None}
+    assert {k: validate_node({**saved, **empty})[k] for k in empty} == {k: LAMBDA_DEFAULTS[k] for k in empty}
+    assert "images: images(), prefix: f.prefix.value.trim(), start_timeout: optNum(f.start_timeout)" in js
+
+
+def test_api_errors_keep_the_server_message():
+    # Caddy's refusal of a config (Apply, "Load file into Caddy") ends with the cause, so api() passes the
+    # server's "detail" on whole; only a body without one (e.g. a proxy's HTML error page) is cut.
+    js = (STATIC / "common.js").read_text()
+    body = js[js.index("async function api("):js.index("function errText")]
+    assert "detail.slice" not in body and "detail.substring" not in body
+    assert re.search(r"text\.length > \d{4} \? text\.slice\(0, \d{4}\)", body)
+
+
+def test_admin_tab_strip_fade():
+    # On phones the admin tabs scroll sideways: setupTabs marks an edge with more tabs behind it, common.css
+    # fades that edge, and revealTab keeps the active tab clear of the fade - the same width in both files -
+    # when a tab is clicked (also selectTab and the restore after a reload) and when the strip appears.
+    js, css = (STATIC / "common.js").read_text(), (STATIC / "common.css").read_text()
+    fade = re.search(r"const TAB_FADE = (\d+);", js).group(1)
+    rules = re.findall(r"\.side-nav\.more-(?:left|right)[^{]*\{([^}]*)\}", css)
+    assert len(rules) == 3 and all(set(re.findall(r"(\d+)px", r)) == {fade} and "mask-image" in r for r in rules), rules
+    setup = js[js.index("function setupTabs("):js.index("function jobsTable(")]
+    assert "revealTab(b)" in setup and "tabEdges(nav)" in setup
+    observer = setup[setup.index("new ResizeObserver("):setup.index(".observe(nav)")]
+    assert "revealTab(a)" in observer and "tabEdges(nav)" in observer
 
 
 def test_settings_script_skips_null_children():

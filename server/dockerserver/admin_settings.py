@@ -28,6 +28,7 @@ Diagnostics, test jobs and function logs: lambda_diag.py.
 import copy
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -392,8 +393,9 @@ class AdminSettings:
                     "max_concurrency", "start_timeout", "stale_after", "fresh_sandbox", ...}]}
         (both keys Fernet-encrypted with DOCKERSERVER_SECRET_KEY, like the ones saved here).
         An access key already saved here and node names already in use win; a node that does not
-        pass validate_node() is skipped with the reason. What happened is stored under
-        "imported" -> "lambda.json", so this runs once; lambda.json itself is left in place."""
+        pass validate_node(), or cannot be read at all, is skipped with the reason. What happened
+        is stored under "imported" -> "lambda.json", so this runs once; lambda.json itself is left
+        in place."""
         path = Path(self.settings.data_dir) / LEGACY_FILE
         done = self.store.get("imported")
         if (isinstance(done, dict) and done.get(LEGACY_FILE)) or not path.is_file():
@@ -403,7 +405,7 @@ class AdminSettings:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise ValueError("not a JSON object")
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, RecursionError) as e:     # RecursionError: nested too deeply
             rec["error"] = f"{LEGACY_FILE} could not be read ({type(e).__name__}); nothing was carried over"
             raw = {}
         aws = self._legacy_key(raw.get("credentials"), rec)
@@ -453,9 +455,10 @@ class AdminSettings:
         rec["aws_key"] = mask_key_id(kid)
         by = c.get("updated_by")
         when = c.get("updated_at")
+        # isprintable(): e.g. a lone surrogate (json reads "\ud800") cannot be written as UTF-8
         return {"access_key_id": kid, "secret_access_key_enc": self.store.encrypt(secret),
-                "updated_at": when if isinstance(when, str) and len(when) <= 40 else rec["at"],
-                "updated_by": by if isinstance(by, str) and 0 < len(by) <= 64 else "import"}
+                "updated_at": when if isinstance(when, str) and len(when) <= 40 and when.isprintable() else rec["at"],
+                "updated_by": by if isinstance(by, str) and 0 < len(by) <= 64 and by.isprintable() else "import"}
 
     def _legacy_nodes(self, nodes, rec: dict) -> list[dict]:
         """lambda.json's nodes -> the ones to save (validated); the others go to rec["skipped"]."""
@@ -464,7 +467,7 @@ class AdminSettings:
         taken, out = self._taken(), []
         for i, n in enumerate(nodes):
             name = n.get("name") if isinstance(n, dict) else None
-            label = name[:60] if isinstance(name, str) and name.strip() else f"#{i + 1}"
+            label = name[:60] if isinstance(name, str) and name.strip() and name.isprintable() else f"#{i + 1}"
             try:
                 if not isinstance(n, dict):
                     raise _bad("not a node object")
@@ -477,14 +480,18 @@ class AdminSettings:
                     d["region"] = arn["region"] if arn else _default_region()
                     if not d["region"]:
                         raise _bad("it has no region: add it again with its region")
-                # the interim tab allowed a little more (start 10-900 s, stale 10-900 s, decimals)
+                # the interim tab allowed a little more (start 10-900 s, stale 10-900 s, decimals);
+                # NaN and Infinity (json reads them) are left to fail validate_node()
                 for k, lo, hi in (("start_timeout", 30, 900), ("stale_after", 20, 600)):
                     v = d.get(k)
-                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    if (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, float) and math.isfinite(v)):
                         d[k] = min(max(int(round(v)), lo), hi)
                 node = validate_node(d, taken=taken)
             except ServiceError as e:
                 rec["skipped"].append({"name": label, "reason": e.message})
+                continue
+            except Exception as e:  # noqa: BLE001 - one odd entry must not keep the server from starting
+                rec["skipped"].append({"name": label, "reason": f"it could not be read ({type(e).__name__})"})
                 continue
             taken.add(node["name"])
             out.append({**node, "created_at": rec["at"], "updated_at": rec["at"], "updated_by": "import"})
@@ -548,7 +555,8 @@ class AdminSettings:
             h = b.health()
             row.update(source=src, editable=src == "admin", active_jobs=self._active(b.name, b, counts),
                        draining=b.name in draining, credentials=self._cred_source(b),
-                       online=h.get("online"),
+                       # None: not checked yet (a new or replaced backend, until its first probe ends)
+                       online=True if h.get("online") else (False if h.get("last_error") else None),
                        last_error=lambda_diag.clean(h["last_error"]) if h.get("last_error") else None)
             rows.append(row)
         in_pool = {b.name.lower() for b in self._nodes()}
@@ -685,6 +693,16 @@ class AdminSettings:
                                     "read-only here; change it there and restart")
         raise ServiceError(404, f"no Lambda node named {name} in Settings")
 
+    def _live(self, name: str):
+        """The pool's node of this name, ignoring case (names are unique ignoring case)."""
+        return next((b for b in self._nodes() if b.name.lower() == name.lower()), None)
+
+    @staticmethod
+    def _probe_soon(b):
+        """Check a new backend once in the background so its online state shows before the next
+        heartbeat; never in the request or under the lock (AWS may be slow or unreachable)."""
+        threading.Thread(target=b.probe, name=f"probe-{b.name}", daemon=True).start()
+
     def add_node(self, admin: str, data) -> dict:
         pool = self.pool
         with self._lock:
@@ -699,6 +717,16 @@ class AdminSettings:
                 self.store.update(lambda d: d.update(lambda_nodes=[
                     x for x in d.get("lambda_nodes", []) if x.get("name") != node["name"]]))
                 raise ServiceError(409, str(e))
+            # a drain kept in nodes.json for an earlier node of this name (e.g. one moved here from
+            # server/.env): a new node takes jobs at once. Not in NodePool.add_node, which attach()
+            # uses at startup, when a Settings node's own drain must stay.
+            if node["name"] in pool.draining:
+                try:
+                    pool.set_draining(node["name"], False)
+                except OSError as e:
+                    log.warning("lambda node %s: could not save that it takes jobs (%s); it is drained "
+                                "again after a restart", node["name"], e)
+        self._probe_soon(b)
         log.info("admin %s changed lambda node %s (added: %s in %s, bucket %s)", admin, node["name"],
                  node["function"], node["region"], node["bucket"])
         return self.node_row(node["name"])
@@ -718,10 +746,11 @@ class AdminSettings:
             changed = sorted(k for k in NODE_FIELDS if node[k] != cur.get(k))
             if not changed:
                 return self.node_row(name)
-            b = pool.by_name(name)
-            live = b if b is not None and getattr(b, "source", None) == "admin" else None
-            if b is not None and live is None:
-                raise ServiceError(409, f"a node named {name} is configured in server/.env, so the one saved "
+            b = self._live(name)
+            live = b if b is not None and b.name == name and getattr(b, "source", None) == "admin" else None
+            if b is not None and live is None:     # hidden by a node of this name (ignoring case)
+                where = "Settings" if getattr(b, "source", None) == "admin" else "server/.env"
+                raise ServiceError(409, f"a node named {b.name} is configured in {where}, so the one saved "
                                         "here is not loaded: delete it here and add it under another name")
             active = self._active(name, live, self._db_active())
 
@@ -729,9 +758,11 @@ class AdminSettings:
                 for x in d.get("lambda_nodes", []):
                     if x.get("name") == name:
                         x.update(node, updated_at=iso(), updated_by=admin)
+            new = None
             if live is None:                         # not loaded (invalid before): store, load
                 self.store.update(save)
-                pool.add_node(self._backend(node))
+                new = self._backend(node)
+                pool.add_node(new)
                 how = "saved and loaded"
             elif not active and live.retire_if_idle():
                 try:
@@ -739,7 +770,8 @@ class AdminSettings:
                 except ServiceError:
                     live.unretire()
                     raise
-                pool.replace_node(self._backend(node))
+                new = self._backend(node)
+                pool.replace_node(new)
                 how = "replaced the backend"
             elif set(changed) & STRUCTURAL:
                 n = max(active, 1)
@@ -749,6 +781,8 @@ class AdminSettings:
                 self.store.update(save)
                 live.reconfigure(**{k: node[k] for k in changed})
                 how = "applied in place (jobs are running)"
+        if new is not None:
+            self._probe_soon(new)
         log.info("admin %s changed lambda node %s (%s; %s)", admin, name, ", ".join(changed), how)
         return self.node_row(name)
 
@@ -757,9 +791,10 @@ class AdminSettings:
         with self._lock:
             if self._stored(name) is None:
                 self._read_only(name)
-            b = pool.by_name(name)
-            live = b if b is not None and getattr(b, "source", None) == "admin" else None
-            # a saved node hidden by a server/.env node of the same name is not in use
+            b = self._live(name)
+            live = b if b is not None and b.name == name and getattr(b, "source", None) == "admin" else None
+            # a saved node hidden by another node of this name (ignoring case; e.g. one in
+            # server/.env) is not in use: only its record goes, the other node stays
             active = 0 if b is not None and live is None else self._active(name, live, self._db_active())
             if active or (live is not None and not live.retire_if_idle()):
                 raise ServiceError(409, f"{max(active, 1)} job(s) running on {name}: drain it and wait, "

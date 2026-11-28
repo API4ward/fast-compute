@@ -6,7 +6,7 @@
 # (/admin-ui -> Settings -> Deploy helper builds this command from a form.)
 # Settings (environment variables, all optional except REGION):
 #   REGION        AWS region (required)
-#   FUNCTION      function name              (default fast-compute-job)
+#   FUNCTION      function name              (default fast-compute-job; lowercase, 2-59 chars)
 #   BUCKET        S3 bucket for job files    (default fast-compute-jobs-<account>-<region>)
 #   MEMORY_MB     memory per job, 128..10240 (default 2048 = ~1.16 vCPU; 1769 MB = 1 vCPU)
 #   TIMEOUT       function timeout s, <=900  (default 900; longest job = TIMEOUT - 30)
@@ -16,13 +16,16 @@
 #   ARCH          x86_64 | arm64             (default x86_64)
 #   SERVER_USER   IAM user the server uses   (default fast-compute-server)
 # It is safe to run again: existing resources are reused, the code/config updated, and the
-# server's IAM policy rewritten (an existing access key keeps working with the new permissions).
+# server's IAM policy for this function updated (an existing access key keeps working with the
+# new permissions).
 #
 # The server's IAM user may only: invoke this function and read its configuration, reserved
 # concurrency and async settings; put/get/delete objects under fast-compute/ in the bucket (and
 # list the bucket, so S3 answers 404, not 403, for a job file that is not written yet); read the
-# function's log group. That covers jobs and /admin-ui -> Settings (Diagnose, test job, Function
-# logs). Nothing here writes credentials anywhere: create the server's access key yourself (the
+# function's log events. That covers jobs and /admin-ui -> Settings (Diagnose, test job, Function
+# logs). These permissions are the managed policy fast-compute-<FUNCTION>, one per function,
+# attached to the user (a re-run deletes the inline policy of that name from an older deploy.sh).
+# Nothing here writes credentials anywhere: create the server's access key yourself (the
 # command is printed at the end) and save it in /admin-ui -> Settings -> AWS account (stored
 # encrypted) or in server/.env.
 #
@@ -49,6 +52,17 @@ SERVER_USER=${SERVER_USER:-fast-compute-server}
 case $NETWORK in none|internet) ;; *) echo "NETWORK must be none or internet" >&2; exit 2;; esac
 case $LOGS in 0|1) ;; *) echo "LOGS must be 0 or 1" >&2; exit 2;; esac
 case $ARCH in x86_64) PLATFORM=linux/amd64;; arm64) PLATFORM=linux/arm64;; *) echo "bad ARCH" >&2; exit 2;; esac
+# FUNCTION also names the ECR repository and image and the IAM role <FUNCTION>-exec (64 characters
+# at most), so: ^[a-z0-9]+([_-][a-z0-9]+)*$, 2-59 characters. The letters are spelled out because
+# a range like [a-z] can match capitals in some locales.
+case $FUNCTION in
+  *[!abcdefghijklmnopqrstuvwxyz0123456789_-]*|[_-]*|*[_-]|*[_-][_-]*) FUNCTION_OK=0;;
+  *) FUNCTION_OK=1;;
+esac
+if [ "$FUNCTION_OK" = 0 ] || [ "${#FUNCTION}" -lt 2 ] || [ "${#FUNCTION}" -gt 59 ]; then
+  echo "FUNCTION must be 2-59 lowercase letters and digits, joined by single - or _" \
+       "(it also names the ECR repository and the role <FUNCTION>-exec)" >&2; exit 2
+fi
 HERE=$(cd "$(dirname "$0")" && pwd)
 export AWS_REGION="$REGION" AWS_PAGER=""
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
@@ -160,13 +174,33 @@ aws lambda put-function-concurrency --function-name "$FUNCTION" \
 aws lambda put-function-event-invoke-config --function-name "$FUNCTION" \
   --maximum-retry-attempts 0 --maximum-event-age-in-seconds 300 >/dev/null
 
-say "IAM user $SERVER_USER for the server (invoke and inspect this function, its job files and logs)"
+say "IAM user $SERVER_USER for the server (policy fast-compute-$FUNCTION: this function, its job files and logs)"
 FN_ARN=$(aws lambda get-function-configuration --function-name "$FUNCTION" --query FunctionArn --output text)
 # function: the unqualified ARN and its versions/aliases; logs: read-only, this log group only
-POLICY=$(printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["lambda:InvokeFunction","lambda:GetFunctionConfiguration","lambda:GetFunctionConcurrency","lambda:GetFunctionEventInvokeConfig"],"Resource":["%s","%s:*"]},{"Effect":"Allow","Action":["s3:PutObject","s3:GetObject","s3:DeleteObject"],"Resource":"arn:aws:s3:::%s/fast-compute/*"},{"Effect":"Allow","Action":"s3:ListBucket","Resource":"arn:aws:s3:::%s"},{"Effect":"Allow","Action":["logs:FilterLogEvents","logs:GetLogEvents","logs:DescribeLogStreams"],"Resource":["%s","%s:*"]}]}' \
+POLICY=$(printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["lambda:InvokeFunction","lambda:GetFunctionConfiguration","lambda:GetFunctionConcurrency","lambda:GetFunctionEventInvokeConfig"],"Resource":["%s","%s:*"]},{"Effect":"Allow","Action":["s3:PutObject","s3:GetObject","s3:DeleteObject"],"Resource":"arn:aws:s3:::%s/fast-compute/*"},{"Effect":"Allow","Action":"s3:ListBucket","Resource":"arn:aws:s3:::%s"},{"Effect":"Allow","Action":"logs:FilterLogEvents","Resource":["%s","%s:*"]}]}' \
   "$FN_ARN" "$FN_ARN" "$BUCKET" "$BUCKET" "$LOG_ARN" "$LOG_ARN")
 aws iam get-user --user-name "$SERVER_USER" >/dev/null 2>&1 || aws iam create-user --user-name "$SERVER_USER" >/dev/null
-aws iam put-user-policy --user-name "$SERVER_USER" --policy-name "fast-compute-$FUNCTION" --policy-document "$POLICY"
+# a managed policy (up to 6,144 characters), not an inline one: all inline policies of one user
+# together may have only 2,048 characters, too few for three functions
+POLICY_NAME=fast-compute-$FUNCTION
+POLICY_ARN=arn:aws:iam::$ACCOUNT:policy/$POLICY_NAME
+if aws iam get-policy --policy-arn "$POLICY_ARN" >/dev/null 2>&1; then
+  # IAM keeps at most 5 versions of a policy: make room by deleting the oldest one not in use
+  VERSIONS=$(aws iam list-policy-versions --policy-arn "$POLICY_ARN" --query 'length(Versions)' --output text)
+  if [ "$VERSIONS" -ge 5 ]; then
+    OLDEST=$(aws iam list-policy-versions --policy-arn "$POLICY_ARN" --output text \
+             --query 'sort_by(Versions[?!IsDefaultVersion], &CreateDate)[0].VersionId')
+    aws iam delete-policy-version --policy-arn "$POLICY_ARN" --version-id "$OLDEST"
+  fi
+  aws iam create-policy-version --policy-arn "$POLICY_ARN" --policy-document "$POLICY" --set-as-default >/dev/null
+else
+  aws iam create-policy --policy-name "$POLICY_NAME" --policy-document "$POLICY" \
+    --description "fast-compute server: Lambda function $FUNCTION, its job files and logs" >/dev/null
+fi
+aws iam attach-user-policy --user-name "$SERVER_USER" --policy-arn "$POLICY_ARN"
+# an older deploy.sh granted these permissions as an inline policy of this name: delete it to
+# free that space
+aws iam delete-user-policy --user-name "$SERVER_USER" --policy-name "$POLICY_NAME" 2>/dev/null || true
 
 cat <<DONE
 

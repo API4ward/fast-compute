@@ -77,8 +77,10 @@ class NodePool:
     # ---- live changes (admin Settings) ----
     def add_node(self, b: Backend):
         with self._lock:
-            if any(x.name == b.name for x in self.nodes):
-                raise ValueError(f"a compute node named {b.name} exists")
+            # unique ignoring case, as Settings checks node names
+            old = next((x for x in self.nodes if x.name.lower() == b.name.lower()), None)
+            if old is not None:
+                raise ValueError(f"a compute node named {old.name} exists")
             self.nodes = [*self.nodes, b]
         log.warning("node %s added (%s)", b.name, getattr(b, "url", "?"))
 

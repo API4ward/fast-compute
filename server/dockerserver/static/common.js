@@ -138,8 +138,10 @@ async function api(path, opts = {}) {
   let data = text;
   if (!opts.raw || !r.ok) { try { data = JSON.parse(text); } catch {} }
   if (!r.ok) {
-    let detail = data && data.detail ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)) : text;
-    if (typeof detail === "string" && detail.length > 400) detail = detail.slice(0, 400) + "…";
+    // The server's message stays whole (Caddy puts the cause of a refused config at the end); only a
+    // body without one, such as a proxy's HTML error page, is cut.
+    const detail = data && data.detail ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail))
+      : text.length > 2000 ? text.slice(0, 2000) + "…" : text;
     const e = new Error(`${r.status}: ${detail}`);
     e.status = r.status;
     e.detail = detail;
@@ -241,13 +243,42 @@ async function initLogin({ requireAdmin, onReady }) {
   }
 }
 
+// A tab strip that scrolls sideways (the admin nav on phones) fades out at an edge with more tabs
+// behind it (common.css) and scrolls the active tab into view.
+const TAB_FADE = 28;   // px, the width of that fade
+function tabEdges(nav) {
+  nav.classList.toggle("more-left", nav.scrollLeft > 1);
+  nav.classList.toggle("more-right", nav.scrollLeft + nav.clientWidth < nav.scrollWidth - 1);
+}
+function revealTab(b) {
+  // Only the strip scrolls: scrollIntoView() would also move the page (it honours scroll-padding-top).
+  const nav = b.closest("nav");
+  if (nav.scrollWidth <= nav.clientWidth) return;
+  const n = nav.getBoundingClientRect(), r = b.getBoundingClientRect();
+  if (r.left < n.left + TAB_FADE) nav.scrollLeft -= n.left + TAB_FADE - r.left;
+  else if (r.right > n.right - TAB_FADE) nav.scrollLeft += r.right - n.right + TAB_FADE;
+}
+
 function setupTabs(onShow) {
-  document.querySelectorAll("nav button[data-tab]").forEach(b => b.addEventListener("click", () => {
-    document.querySelectorAll("nav button[data-tab]").forEach(x => {
+  const buttons = [...document.querySelectorAll("nav button[data-tab]")];
+  for (const nav of new Set(buttons.map(b => b.closest("nav")))) {
+    nav.addEventListener("scroll", () => tabEdges(nav), { passive: true });
+    // keyboard users: a tab reached with Tab is scrolled into view, past the edge fade
+    nav.addEventListener("focusin", e => { const b = e.target.closest("button[data-tab]"); if (b) revealTab(b); });
+    // also when the page first shows the strip, or a resize (a tablet turned upright) makes the sidebar one
+    new ResizeObserver(() => {
+      const a = nav.querySelector("button[data-tab].active");
+      if (a) revealTab(a);
+      tabEdges(nav);
+    }).observe(nav);
+  }
+  buttons.forEach(b => b.addEventListener("click", () => {
+    buttons.forEach(x => {
       x.classList.toggle("active", x === b);
       if (x === b) x.setAttribute("aria-current", "page"); else x.removeAttribute("aria-current");
     });
     document.querySelectorAll("section[data-tab]").forEach(s => s.classList.toggle("hidden", s.dataset.tab !== b.dataset.tab));
+    revealTab(b);
     onShow(b.dataset.tab);
   }));
 }

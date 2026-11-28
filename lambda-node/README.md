@@ -64,7 +64,7 @@ REGION=eu-west-2 FUNCTION=fast-compute-net NETWORK=internet LOGS=1 sh lambda-nod
 | Variable | Default | |
 |---|---|---|
 | `REGION` | — (required) | AWS region of the function and the bucket |
-| `FUNCTION` | `fast-compute-job` | function name (also the ECR repository and `<FUNCTION>-exec` role) |
+| `FUNCTION` | `fast-compute-job` | function name: 2–59 lowercase letters and digits, joined by single `-` or `_` (it also names the ECR repository and the `<FUNCTION>-exec` role) |
 | `BUCKET` | `fast-compute-jobs-<account>-<region>` | S3 bucket for job files (private; objects under `fast-compute/` expire after 2 days) |
 | `MEMORY_MB` | 2048 | memory per job, 128–10240 (1769 MB = 1 vCPU, max 6) |
 | `TIMEOUT` | 900 | function timeout in s (≤ 900); longest job = `TIMEOUT` − 30 |
@@ -75,9 +75,9 @@ REGION=eu-west-2 FUNCTION=fast-compute-net NETWORK=internet LOGS=1 sh lambda-nod
 | `SERVER_USER` | `fast-compute-server` | IAM user the server signs in as |
 
 It is safe to run again: existing resources are reused, the code and configuration updated, and
-the server's IAM policy rewritten, so an existing access key gets new permissions without any
-change on the server. At the end it prints the command that creates the server's access key and
-the values for the next step.
+the server's IAM policy for the function updated (see [Permissions](#permissions)), so an
+existing access key gets new permissions without any change on the server. At the end it prints
+the command that creates the server's access key and the values for the next step.
 
 ## 2. Connect it: `/admin-ui` → Settings
 
@@ -104,10 +104,11 @@ the values for the next step.
 
 Changing a node: max concurrency, images, network, timeouts and fresh sandbox can change while
 jobs run (new jobs use them). Function, bucket, region and prefix only change on an idle node:
-**Drain** it on the Nodes tab, wait for its jobs, then save. A node with running jobs cannot be
-deleted; the name cannot be changed (delete and add again). Deleting a node does not touch the
-function or the bucket in AWS. Add each function only once: two nodes on one function would each
-count their own concurrency slots.
+**Drain** it on the Nodes tab, wait for its jobs, save, then click **Resume** on the Nodes tab
+(the node stays drained after saving). A node with running jobs cannot be deleted; the name
+cannot be changed (delete and add again). Deleting a node does not touch the function or the
+bucket in AWS. Add each function only once: two nodes on one function would each count their own
+concurrency slots.
 
 ### Alternative: `server/.env`
 
@@ -122,7 +123,8 @@ Restart dockerserver after editing. Optional node keys: `prefix`, `images`, `sta
 instead of the `AWS_*` variables), `s3_endpoint_url`, `lambda_endpoint_url`. Settings shows
 these nodes as "server/.env · read-only" (Diagnose, test job and function logs work for them
 too). To move a node into Settings: drain it, wait for its jobs, remove it from
-`DOCKERSERVER_NODES`, restart, and add it in Settings under the same name.
+`DOCKERSERVER_NODES`, restart, and add it in Settings under the same name; it takes jobs at once
+(the drain does not carry over).
 
 The server needs `boto3` (in `requirements.txt`): `.venv/bin/pip install -r requirements.txt` in
 `server/`, then restart. Settings warns when it is missing.
@@ -183,21 +185,27 @@ Admin MCP (`/mcp-admin`), read-only: `lambda_settings`, `diagnose_lambda_node(na
 | Lambda function: `ResourceNotFoundException` | Wrong function name or region. |
 | Lambda function / S3: `AccessDenied` | The server's IAM policy does not cover this function or bucket: check the names, re-run `deploy.sh`. |
 | Reserved concurrency / async retries skipped (not allowed) | The server's IAM policy is from an older `deploy.sh`: re-run it. |
-| S3 bucket access warns: a job file not written yet reads as 403 | The server's IAM policy is from an older `deploy.sh` (no `s3:ListBucket`): re-run it. Until then jobs log warnings while the function starts. |
+| S3 bucket access warns: a job file not written yet reads as 403 | The server's IAM policy is from an older `deploy.sh` (no `s3:ListBucket`). Jobs are not affected: until the function first reports, the server reads that 403 as "not written yet". Re-run `deploy.sh` so S3 answers 404. |
 | Lambda function warns about the network | `network=none` but the function is not in a VPC (jobs would have internet), or the reverse: redeploy with the matching `NETWORK` or change the node. |
 | S3: `NoSuchBucket`, `PermanentRedirect` | Wrong bucket name, or the bucket is in another region than the node. |
 | Test job: "did not start within … s" | The function fails before the handler runs: look at Function logs (needs `LOGS=1` for `NETWORK=internet`), the image architecture, the account's concurrency. |
 | Function logs: `AccessDenied…` | The server's IAM policy is from an older `deploy.sh`: re-run it. |
 | Function logs: "no log group …" | The function never wrote logs: deploy with `LOGS=1` (or it has not run yet). |
 | `deploy.sh` stops at `put-function-concurrency` ("UnreservedConcurrentExecution below its minimum value of [100]") | The account's Lambda concurrency quota is too low (new accounts may get 10): request more in Service Quotas, then run it again. |
+| `deploy.sh` stops at `attach-user-policy` (`LimitExceeded`) | The server's IAM user already has 10 managed policies attached (the default quota; one per function): detach the policy of a function you no longer use, or ask AWS for a higher quota, then run it again. |
 
 ## Permissions
 
-- **Server's IAM user** (`fast-compute-server`, inline policy `fast-compute-<function>`):
-  invoke this function and read its configuration, reserved concurrency and async settings;
-  put/get/delete objects under `fast-compute/` in the bucket and list the bucket (so S3 answers
-  404, not 403, for a job file that is not written yet); read the function's log group
-  (`FilterLogEvents`, `GetLogEvents`, `DescribeLogStreams`). Nothing else.
+- **Server's IAM user** (`fast-compute-server`), one managed policy `fast-compute-<function>` per
+  function attached to it: invoke this function and read its configuration, reserved concurrency
+  and async settings; put/get/delete objects under `fast-compute/` in the bucket and list the
+  bucket (so S3 answers 404, not 403, for a job file that is not written yet); read the
+  function's log events (`logs:FilterLogEvents`). Nothing else. These are managed policies, not
+  inline ones: all inline policies of one IAM user together may have only 2,048 characters, too
+  few for three functions; a managed policy may have 6,144, and a user can have 10 attached (the
+  default quota). A re-run saves the policy as a new version (IAM keeps at most five: the oldest
+  one not in use is deleted first) and deletes the inline policy of the same name that an older
+  `deploy.sh` wrote.
 - **Execution role** (`<function>-exec`): no permissions of its own; `AWSLambdaVPCAccessExecutionRole`
   with `NETWORK=none`; `fast-compute-logs` with `LOGS=1`.
 - **VPC endpoint** (`NETWORK=none`): only `GetObject` / `PutObject` under `fast-compute/` in the bucket.

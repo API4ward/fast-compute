@@ -357,6 +357,14 @@ ul.plain li { margin: 3px 0; }
   .side-nav { order: 3; flex: 1 0 100%; flex-direction: row; overflow-x: auto; gap: 2px; padding: 2px 0 8px;
     scrollbar-width: none; }
   .side-nav::-webkit-scrollbar { display: none; }
+  /* an edge with more tabs behind it fades out (28px = TAB_FADE; setupTabs in common.js sets the classes) */
+  .side-nav.more-right { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+  .side-nav.more-left { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
+  .side-nav.more-left.more-right {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
   .side-nav button { flex: none; padding: 7px 11px; font-size: 13.5px; }
   .side-nav svg { width: 16px; height: 16px; }
   .admin-main { padding: 22px 20px 56px; }

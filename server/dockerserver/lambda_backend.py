@@ -47,8 +47,10 @@ LIVE_KEYS = ("max_concurrency", "images", "network", "start_timeout", "stale_aft
 
 
 def function_name(function: str) -> str:
-    """Function name from a name or an ARN (arn:aws:lambda:<region>:<account>:function:<name>[:q])."""
-    return function.split(":")[6] if function.startswith("arn:") and function.count(":") >= 6 else function
+    """The bare function name (e.g. for its log group) of any FunctionName form Lambda accepts:
+    <name>[:q], <account>:function:<name>[:q] or arn:aws:lambda:<region>:<account>:function:<name>[:q]."""
+    name = function.split(":function:", 1)[1] if ":function:" in function else function
+    return name.split(":", 1)[0]
 
 
 class LambdaBackend(Backend):
@@ -81,6 +83,7 @@ class LambdaBackend(Backend):
         self.credentials = credentials
         self._client_factory = client_factory   # tests: callable(service, region) -> client
         self._injected = {"lambda": lambda_client is not None, "s3": s3_client is not None}
+        self._gen = 0                    # client generation: reset_clients() counts it up
         self.source = source             # "env" (DOCKERSERVER_NODES) or "admin" (Settings)
         self._retired = False            # replaced or removed in Settings: takes no new job
         self._lock = threading.Lock()
@@ -114,8 +117,8 @@ class LambdaBackend(Backend):
 
     @property
     def lam(self):
-        c = self._lambda
-        if c is None:
+        while (c := self._lambda) is None:
+            gen = self._gen
             if self._client_factory is not None:
                 c = self._client_factory("lambda", self.region)
             else:
@@ -124,13 +127,13 @@ class LambdaBackend(Backend):
                     "lambda", endpoint_url=self._lambda_endpoint,
                     config=Config(retries={"max_attempts": 3, "mode": "standard"},
                                   connect_timeout=5, read_timeout=30))
-            self._lambda = c
+            self._keep("_lambda", c, gen)
         return c
 
     @property
     def s3(self):
-        c = self._s3
-        if c is None:
+        while (c := self._s3) is None:
+            gen = self._gen
             if self._client_factory is not None:
                 c = self._client_factory("s3", self.region)
             else:
@@ -141,16 +144,25 @@ class LambdaBackend(Backend):
                     config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"},
                                   retries={"max_attempts": 3, "mode": "standard"},
                                   connect_timeout=5, read_timeout=30))
-            self._s3 = c
+            self._keep("_s3", c, gen)
         return c
+
+    def _keep(self, attr: str, client, gen: int):
+        """Cache a new client, unless reset_clients() ran while it was built: it may hold the
+        credentials from before the change, so the caller builds another."""
+        with self._lock:
+            if self._gen == gen and getattr(self, attr) is None:
+                setattr(self, attr, client)
 
     def reset_clients(self):
         """The saved AWS credentials changed: build new clients on next use (injected ones stay;
-        a call in progress finishes with the old client)."""
-        if not self._injected["lambda"]:
-            self._lambda = None
-        if not self._injected["s3"]:
-            self._s3 = None
+        a call in progress finishes with the old client; one being built is not kept)."""
+        with self._lock:
+            self._gen += 1
+            if not self._injected["lambda"]:
+                self._lambda = None
+            if not self._injected["s3"]:
+                self._s3 = None
 
     # ---- live changes (admin Settings) ----
     def config(self) -> dict:
@@ -293,8 +305,10 @@ class LambdaBackend(Backend):
                 raise NoCapacity(f"lambda node {self.name}: all {self.max_concurrency} slots busy")
             job = f"ds{spec.job_id}-{int(time.time())}"
             self._inflight.add(job)
+            # this job keeps the timeouts it started with: a change in Settings is for new jobs
+            timeouts = {"start_timeout": self.start_timeout, "stale_after": self.stale_after}
         try:
-            expires = int(spec.timeout_seconds + self.start_timeout + 900)
+            expires = int(spec.timeout_seconds + timeouts["start_timeout"] + 900)
             ws = node_workspace(payload)
             if ws:
                 self.s3.put_object(Bucket=self.bucket, Key=self._key(job, "workspace.tar"), Body=ws)
@@ -325,7 +339,7 @@ class LambdaBackend(Backend):
             raise BackendError(f"lambda node {self.name}: {type(e).__name__}: {e}") from e
         now = time.time()
         self.last_ok = now
-        return Handle(self, job, self.name, extra={"invoked": now, "etag": None, "changed": now})
+        return Handle(self, job, self.name, extra={"invoked": now, "etag": None, "changed": now, **timeouts})
 
     def _forget(self, job: str):
         with self._lock:
@@ -349,13 +363,17 @@ class LambdaBackend(Backend):
 
     def _poll(self, h: Handle) -> ExecStatus | None:
         now = time.time()
-        # a job recovered after a restart has no "invoked": its start timeout counts from now
+        # a job recovered after a restart has no "invoked": its start timeout counts from now;
+        # nor its own timeouts (start()): it uses the node's current ones
         invoked = h.extra.setdefault("invoked", now)
+        start_timeout = h.extra.get("start_timeout", self.start_timeout)
+        stale_after = h.extra.get("stale_after", self.stale_after)
         try:
             # until the invocation first reports, a 403 may only mean "no status.json yet"
             body, etag = self._get(h.id, "status.json", denied_is_missing="first_seen" not in h.extra)
         except BackendError as e:
             h.unreachable_since = h.unreachable_since or now
+            h.extra["read_error"] = str(e)        # shown by the admin's test job
             log.warning("job %s: %s", h.id, e)
             return None
         h.unreachable_since, h.last_seen = None, now
@@ -363,10 +381,10 @@ class LambdaBackend(Backend):
         if h.extra.get("final") is not None:
             return h.extra["final"]
         if body is None:
-            if now - invoked > self.start_timeout:
+            if now - invoked > start_timeout:
                 return self._final(h, ExecStatus(
                     finished=True, node_status="error",
-                    error=f"the Lambda function did not start the job within {int(self.start_timeout)} s"))
+                    error=f"the Lambda function did not start the job within {int(start_timeout)} s"))
             st = ExecStatus(finished=False, node_status="preparing")
             h.last_status = st
             return st
@@ -382,10 +400,10 @@ class LambdaBackend(Backend):
                      cpu_peak_pct=d.get("cpu_peak_pct"), mem_avg_mb=d.get("mem_avg_mb"),
                      mem_peak_mb=d.get("mem_peak_mb"))
         if status in ("preparing", "running"):
-            if now - h.extra.get("changed", now) > self.stale_after:
+            if now - h.extra.get("changed", now) > stale_after:
                 return self._final(h, ExecStatus(
                     finished=True, node_status="error", **stats,
-                    error=(f"the Lambda invocation stopped reporting for {int(self.stale_after)} s "
+                    error=(f"the Lambda invocation stopped reporting for {int(stale_after)} s "
                            "(out of memory, crashed, or hit the function timeout)")))
             st = ExecStatus(finished=False, node_status=status, **stats)
             h.last_status = st
