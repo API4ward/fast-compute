@@ -182,6 +182,20 @@ class Settings:
     # How often idle sites are checked and usage counters are written to the database.
     site_reap_interval: float = field(default_factory=lambda: float(_env("SITE_REAP_INTERVAL", "30")))
 
+    # ---- homepage product advisor (sales.py; POST /sales/chat) ----
+    # Any OpenAI-compatible chat completions API (OpenAI, DeepSeek, xAI, Qwen, a local server...).
+    # The advisor uses it only when both API key and model are set; otherwise it answers from a
+    # built-in FAQ.
+    sales_base_url: str = field(default_factory=lambda: _env("SALES_BASE_URL", "https://api.openai.com/v1"))
+    sales_model: str = field(default_factory=lambda: _env("SALES_MODEL", ""))
+    sales_api_key: str = field(default_factory=lambda: _env("SALES_API_KEY", ""), repr=False)
+    sales_max_tokens: int = field(default_factory=lambda: int(_env("SALES_MAX_TOKENS", "800")))
+    # Questions per client IP per hour, and LLM answers per day in total (then FAQ answers).
+    sales_rate_limit: int = field(default_factory=lambda: int(_env("SALES_RATE_LIMIT", "30")))
+    sales_daily_limit: int = field(default_factory=lambda: int(_env("SALES_DAILY_LIMIT", "500")))
+    # Optional public contact shown on the homepage (e.g. an email address).
+    sales_contact: str = field(default_factory=lambda: _env("SALES_CONTACT", ""))
+
     # ---- Caddy config management (caddy.py; admin UI "Caddy" tab) ----
     caddy_manage: bool = field(default_factory=lambda: _bool("CADDY_MANAGE", True))
     # The Caddyfile Caddy actually uses (/etc/caddy/Caddyfile only imports it).
