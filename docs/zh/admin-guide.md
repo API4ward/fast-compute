@@ -114,6 +114,20 @@ curl -s -H "Authorization: Bearer $ADMIN" -H "Content-Type: application/json" \
 curl -s -H "Authorization: Bearer $ADMIN" "$DS/admin/usage?start=2026-11-01T00:00:00&end=2026-12-01T00:00:00"
 ```
 
+## 产品主页与产品顾问
+
+`/` 是公开的产品主页（中英文）。右下角的聊天窗口是产品顾问：
+
+- 未配置大模型时，按内置 FAQ 回答。要接入大模型，在 `server/.env` 中设置任意 OpenAI 兼容接口后重启：
+  `DOCKERSERVER_SALES_BASE_URL`（默认 `https://api.openai.com/v1`，例如 `https://api.deepseek.com/v1`、
+  `https://api.x.ai/v1`）、`DOCKERSERVER_SALES_MODEL` 和 `DOCKERSERVER_SALES_API_KEY`。两者都设置后，
+  `GET /sales/info` 返回 `"mode": "llm"`。
+- 模型只能看到 `server/dockerserver/sales.py` 中的产品介绍（`KNOWLEDGE`），产品变化时请同步修改；它看不到任何用户数据。
+- 限制：每个访客 IP 每小时最多 `DOCKERSERVER_SALES_RATE_LIMIT` 个问题（30），全站每天最多
+  `DOCKERSERVER_SALES_DAILY_LIMIT` 次大模型回答（500），超出后改用 FAQ 回答。
+- 「申请试用」表单保存在 `server/data/leads.jsonl`，用管理员令牌调用 `GET /admin/leads` 查看。
+  可选的 `DOCKERSERVER_SALES_CONTACT` 会在主页显示联系方式。
+
 ## 限额与默认值
 
 - 新用户获得 `DOCKERSERVER_DEFAULT_CREDIT_HOURS`（1000）额度，以及 `server/.env` 中的默认限额：

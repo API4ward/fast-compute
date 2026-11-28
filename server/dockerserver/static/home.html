@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fast-compute · AI-native compute platform</title>
+<meta name="description" content="fast-compute: run code in isolated containers across an extensible compute pool and host small websites, straight from Claude via MCP.">
+<link rel="stylesheet" href="/static/home.css">
+</head>
+<body>
+<header class="nav" id="top">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top" aria-label="fast-compute">
+      <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--a1)"/><stop offset="1" stop-color="var(--a2)"/></linearGradient></defs><rect x="2" y="2" width="28" height="28" rx="8" fill="url(#lg)"/><path d="M17.5 6 9 18h6l-1.5 8L22 14h-6z" fill="#fff"/></svg>
+      <span>fast-compute</span>
+    </a>
+    <nav class="links">
+      <a href="#features" data-i18n="nav.features"></a>
+      <a href="#arch" data-i18n="nav.arch"></a>
+      <a href="#sites" data-i18n="nav.sites"></a>
+      <a href="#pricing" data-i18n="nav.pricing"></a>
+      <a href="#faq" data-i18n="nav.faq"></a>
+    </nav>
+    <div class="nav-act">
+      <button class="ghost sm" id="lang-btn" type="button" aria-label="Language">EN</button>
+      <a class="ghost sm hide-sm" href="/ui" data-i18n="nav.dashboard"></a>
+      <a class="btn sm" href="#access" data-i18n="nav.access"></a>
+    </div>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <div class="glow g1"></div><div class="glow g2"></div>
+  <div class="wrap hero-in">
+    <div class="hero-copy">
+      <span class="eyebrow"><span class="dot"></span><span data-i18n="hero.eyebrow"></span></span>
+      <h1 data-i18n-html="hero.title"></h1>
+      <p class="lead" data-i18n="hero.sub"></p>
+      <div class="cta">
+        <a class="btn lg" href="#access" data-i18n="hero.cta1"></a>
+        <button class="ghost lg" type="button" data-open-chat data-i18n="hero.cta2"></button>
+      </div>
+      <ul class="ticks">
+        <li data-i18n="hero.t1"></li><li data-i18n="hero.t2"></li><li data-i18n="hero.t3"></li>
+      </ul>
+    </div>
+    <div class="term" aria-hidden="true">
+      <div class="term-bar"><i></i><i></i><i></i><span>Claude · fast-compute MCP</span></div>
+      <div class="term-body" id="term"></div>
+    </div>
+  </div>
+</section>
+
+<section class="strip">
+  <div class="wrap stats">
+    <div><b data-i18n="s.v1"></b><span data-i18n="s.k1"></span></div>
+    <div><b data-i18n="s.v2"></b><span data-i18n="s.k2"></span></div>
+    <div><b data-i18n="s.v3"></b><span data-i18n="s.k3"></span></div>
+    <div><b data-i18n="s.v4"></b><span data-i18n="s.k4"></span></div>
+  </div>
+</section>
+
+<section class="sec" id="features">
+  <div class="wrap">
+    <p class="kicker" data-i18n="f.kicker"></p>
+    <h2 data-i18n="f.title"></h2>
+    <div class="grid3" id="feature-grid"></div>
+  </div>
+</section>
+
+<section class="sec alt" id="arch">
+  <div class="wrap two">
+    <div>
+      <p class="kicker" data-i18n="a.kicker"></p>
+      <h2 data-i18n="a.title"></h2>
+      <p class="muted" data-i18n="a.body"></p>
+      <ul class="legend">
+        <li><span class="pill on" data-i18n="a.live"></span><span data-i18n="a.l1"></span></li>
+        <li><span class="pill wip" data-i18n="a.joining"></span><span data-i18n="a.l2"></span></li>
+        <li><span class="pill soon" data-i18n="a.soon"></span><span data-i18n="a.l3"></span></li>
+      </ul>
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 520 380" role="img" aria-labelledby="arch-t">
+        <title id="arch-t">fast-compute architecture</title>
+        <defs>
+          <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--a1)"/><stop offset="1" stop-color="var(--a2)"/></linearGradient>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="var(--muted)"/></marker>
+        </defs>
+        <g class="d-box"><rect x="20" y="20" width="200" height="56" rx="12"/><text x="120" y="44" class="d-t" data-i18n="d.clients"></text><text x="120" y="63" class="d-s">Claude · MCP · REST · Web</text></g>
+        <g class="d-box"><rect x="300" y="20" width="200" height="56" rx="12"/><text x="410" y="44" class="d-t" data-i18n="d.visitors"></text><text x="410" y="63" class="d-s">https://…/sites/…</text></g>
+        <path d="M120 76 V120 H230" class="d-line" marker-end="url(#ah)"/>
+        <path d="M410 76 V120 H290" class="d-line" marker-end="url(#ah)"/>
+        <g><rect x="140" y="104" width="240" height="78" rx="14" fill="url(#bg2)"/><text x="260" y="134" class="d-t w" data-i18n="d.bridge"></text><text x="260" y="156" class="d-s w" data-i18n="d.bridge2"></text></g>
+        <path d="M260 182 V214" class="d-line"/>
+        <path d="M75 214 H445" class="d-line"/>
+        <path d="M75 214 V246" class="d-line" marker-end="url(#ah)"/><path d="M198 214 V246" class="d-line" marker-end="url(#ah)"/>
+        <path d="M322 214 V246" class="d-line dash" marker-end="url(#ah)"/><path d="M445 214 V246" class="d-line dash" marker-end="url(#ah)"/>
+        <text x="270" y="207" class="d-s" text-anchor="start" data-i18n="d.tailnet"></text>
+        <g class="d-node on"><rect x="20" y="250" width="110" height="96" rx="12"/><text x="75" y="278" class="d-t">Mac mini</text><text x="75" y="298" class="d-s">Docker · 10 cores</text><text x="75" y="330" class="d-tag" data-i18n="a.live"></text></g>
+        <g class="d-node wip"><rect x="143" y="250" width="110" height="96" rx="12"/><text x="198" y="278" class="d-t">Windows</text><text x="198" y="298" class="d-s">WSL · Docker</text><text x="198" y="330" class="d-tag" data-i18n="a.joining"></text></g>
+        <g class="d-node soon"><rect x="267" y="250" width="110" height="96" rx="12"/><text x="322" y="278" class="d-t">AWS Lambda</text><text x="322" y="298" class="d-s">Serverless</text><text x="322" y="330" class="d-tag" data-i18n="a.soon"></text></g>
+        <g class="d-node add"><rect x="390" y="250" width="110" height="96" rx="12"/><text x="445" y="284" class="d-t big">+</text><text x="445" y="306" class="d-s" data-i18n="d.yours"></text></g>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="sites">
+  <div class="wrap two rev">
+    <div class="code-card">
+      <div class="chat-demo">
+        <div class="bub me" data-i18n="w.ask"></div>
+        <div class="bub tool"><code>put_site_file</code> × 4 → <code>publish_site("portfolio")</code></div>
+        <div class="bub ai" data-i18n-html="w.answer"></div>
+      </div>
+    </div>
+    <div>
+      <p class="kicker" data-i18n="w.kicker"></p>
+      <h2 data-i18n="w.title"></h2>
+      <p class="muted" data-i18n="w.body"></p>
+      <ol class="steps" id="site-steps"></ol>
+    </div>
+  </div>
+</section>
+
+<section class="sec alt" id="how">
+  <div class="wrap">
+    <p class="kicker" data-i18n="h.kicker"></p>
+    <h2 data-i18n="h.title"></h2>
+    <div class="grid3 how" id="how-grid"></div>
+  </div>
+</section>
+
+<section class="sec" id="pricing">
+  <div class="wrap two">
+    <div>
+      <p class="kicker" data-i18n="p.kicker"></p>
+      <h2 data-i18n="p.title"></h2>
+      <p class="muted" data-i18n-html="p.body"></p>
+      <ul class="checks" id="price-list"></ul>
+    </div>
+    <div class="card calc">
+      <h3 data-i18n="p.calc"></h3>
+      <label><span data-i18n="p.cpus"></span><output id="o-cpu"></output><input type="range" id="c-cpu" min="0.5" max="8" step="0.5" value="2"></label>
+      <label><span data-i18n="p.mem"></span><output id="o-mem"></output><input type="range" id="c-mem" min="256" max="8192" step="256" value="512"></label>
+      <label><span data-i18n="p.mins"></span><output id="o-min"></output><input type="range" id="c-min" min="1" max="240" step="1" value="30"></label>
+      <div class="calc-out"><span data-i18n="p.cost"></span><b id="o-cost"></b></div>
+      <p class="fine" data-i18n="p.fine"></p>
+    </div>
+  </div>
+</section>
+
+<section class="sec alt" id="faq">
+  <div class="wrap narrow">
+    <p class="kicker center" data-i18n="q.kicker"></p>
+    <h2 class="center" data-i18n="q.title"></h2>
+    <div id="faq-list"></div>
+  </div>
+</section>
+
+<section class="sec" id="access">
+  <div class="wrap narrow">
+    <div class="access card">
+      <div>
+        <h2 data-i18n="r.title"></h2>
+        <p class="muted" data-i18n="r.body"></p>
+        <p class="muted contact hidden" id="contact-line"></p>
+      </div>
+      <form id="lead-form" novalidate>
+        <label><span data-i18n="r.name"></span><input name="name" maxlength="200" autocomplete="name"></label>
+        <label><span data-i18n="r.contact"></span><input name="contact" maxlength="200" required autocomplete="email"></label>
+        <label><span data-i18n="r.msg"></span><textarea name="message" rows="4" maxlength="4000"></textarea></label>
+        <button class="btn" type="submit" data-i18n="r.send"></button>
+        <p class="form-msg" id="lead-msg" role="status"></p>
+      </form>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <span>© fast-compute</span>
+    <span class="foot-links"><a href="/welcome" data-i18n="ft.guide"></a><a href="/ui" data-i18n="nav.dashboard"></a><a href="/docs">API</a></span>
+  </div>
+</footer>
+
+<button class="chat-fab" id="chat-fab" type="button" data-open-chat>
+  <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 5h16v11H8l-4 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+  <span data-i18n="c.fab"></span>
+</button>
+<section class="chat hidden" id="chat" aria-label="Product advisor" role="dialog">
+  <div class="chat-head">
+    <div class="avatar">fc</div>
+    <div><b data-i18n="c.title"></b><small data-i18n="c.sub"></small></div>
+    <button class="icon" id="chat-reset" type="button" data-i18n-title="c.reset" aria-label="reset"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></button>
+    <button class="icon" id="chat-close" type="button" aria-label="close">✕</button>
+  </div>
+  <div class="chat-log" id="chat-log" aria-live="polite"></div>
+  <div class="chips" id="chat-chips"></div>
+  <form class="chat-in" id="chat-form">
+    <textarea id="chat-text" rows="1" maxlength="1500" data-i18n-ph="c.ph"></textarea>
+    <button class="btn sm" type="submit" data-i18n="c.send"></button>
+  </form>
+</section>
+
+<script src="/static/home.js"></script>
+</body>
+</html>

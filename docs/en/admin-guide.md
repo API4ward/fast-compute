@@ -125,6 +125,21 @@ curl -s -H "Authorization: Bearer $ADMIN" -H "Content-Type: application/json" \
 curl -s -H "Authorization: Bearer $ADMIN" "$DS/admin/usage?start=2026-11-01T00:00:00&end=2026-12-01T00:00:00"
 ```
 
+## Homepage and product advisor
+
+`/` is the public product homepage (Chinese/English). Its chat widget is a product advisor:
+
+- Without an LLM it answers from a built-in FAQ. To use an LLM, set an OpenAI-compatible API in
+  `server/.env` and restart: `DOCKERSERVER_SALES_BASE_URL` (default `https://api.openai.com/v1`; e.g.
+  `https://api.deepseek.com/v1`, `https://api.x.ai/v1`), `DOCKERSERVER_SALES_MODEL` and
+  `DOCKERSERVER_SALES_API_KEY`. `GET /sales/info` shows `"mode": "llm"` once both are set.
+- The model only sees the product facts in `server/dockerserver/sales.py` (`KNOWLEDGE`); edit them
+  when the product changes. It never sees user data.
+- Limits: `DOCKERSERVER_SALES_RATE_LIMIT` questions per visitor IP per hour (30), and
+  `DOCKERSERVER_SALES_DAILY_LIMIT` LLM answers per day in total (500), after which the FAQ answers.
+- The "Request access" form stores requests in `server/data/leads.jsonl`; read them with
+  `GET /admin/leads` (admin token). `DOCKERSERVER_SALES_CONTACT` optionally shows a contact line.
+
 ## Limits and defaults
 
 - New users get `DOCKERSERVER_DEFAULT_CREDIT_HOURS` (1000) and the default limits from

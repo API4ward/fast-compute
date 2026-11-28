@@ -26,6 +26,7 @@ from .schemas import (AdminJobOut, CaddyEdit, CreditChange, EnvValue, JobOut, Le
                       UserCreate, UserCreated, UserOut, UserUpdate, ledger_out)
 from .services import ServiceError, Services
 from .sites import SiteError, SiteManager
+from .sales import SalesAgent, SalesError
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -78,6 +79,7 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     caddy = CaddyManager(settings.caddyfile, settings.caddy_admin, settings.data_dir / "caddy" / "backups",
                          enabled=settings.caddy_manage, transport=caddy_transport,
                          root=settings.caddy_root)
+    sales = SalesAgent(settings)
     site_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=3.0), trust_env=False)
     with Session_() as db:
         grant_missing_initial(db, settings.default_credit_hours)
@@ -107,12 +109,14 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
                 pool_.stop_heartbeat()
             svc.sites.shutdown()
             await site_http.aclose()
+            await sales.aclose()
             caddy.close()
 
     app = FastAPI(title="DockerServer", version=__version__, lifespan=lifespan)
     app.state.settings, app.state.Session, app.state.runner = settings, Session_, runner
     app.state.services = svc
     app.state.caddy = caddy
+    app.state.sales = sales
     if settings.oauth_enabled:
         from .oauth import DSOAuthProvider, HostCheck, build_oauth_routes
         svc.oauth = DSOAuthProvider(svc)
@@ -128,6 +132,10 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
 
     @app.exception_handler(CaddyError)
     async def _caddy_error(_req, exc: CaddyError):
+        return JSONResponse({"detail": exc.message}, status_code=exc.status)
+
+    @app.exception_handler(SalesError)
+    async def _sales_error(_req, exc: SalesError):
         return JSONResponse({"detail": exc.message}, status_code=exc.status)
 
     @app.exception_handler(ServiceError)
@@ -164,7 +172,7 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     def render_page(name: str) -> HTMLResponse:
         # Asset URLs carry a content hash so browsers / Cloudflare never serve a stale copy.
         html = (static_dir / name).read_text()
-        for asset in ("common.js", "common.css", "welcome.js"):
+        for asset in ("common.js", "common.css", "welcome.js", "home.css", "home.js"):
             digest = hashlib.sha256((static_dir / asset).read_bytes()).hexdigest()[:12]
             html = html.replace(f"/static/{asset}\"", f"/static/{asset}?v={digest}\"")
         return HTMLResponse(html, headers=page_headers)
@@ -190,7 +198,36 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
 
     @app.get("/", include_in_schema=False)
     def root():
-        return RedirectResponse("/ui")
+        # Public product homepage with the product advisor chat.
+        return render_page("home.html")
+
+    # ----- homepage product advisor (public, rate limited) -----
+    def client_ip(request: Request) -> str:
+        return request.client.host if request.client else "?"
+
+    @app.get("/sales/info")
+    def sales_info():
+        return sales.public_info()
+
+    @app.post("/sales/chat")
+    async def sales_chat(request: Request):
+        try:
+            data = await request.json()
+        except ValueError:
+            raise SalesError(400, "invalid JSON")
+        if not isinstance(data, dict):
+            raise SalesError(400, "invalid request")
+        lang = "zh" if data.get("lang") == "zh" else "en"
+        return await sales.reply(data.get("messages"), lang, client_ip(request))
+
+    @app.post("/sales/lead", status_code=201)
+    async def sales_lead(request: Request):
+        try:
+            data = await request.json()
+        except ValueError:
+            raise SalesError(400, "invalid JSON")
+        await anyio.to_thread.run_sync(sales.add_lead, data, client_ip(request))
+        return {"ok": True}
 
     @app.get("/admin", include_in_schema=False)
     @app.get("/admin-ui/", include_in_schema=False)
@@ -369,6 +406,10 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
         return svc.set_node_draining(admin, name, False)
 
     # ----- admin -----
+    @app.get("/admin/leads")
+    def admin_leads(_: Admin, limit: int = 200):
+        return sales.list_leads(max(1, min(limit, 1000)))
+
     @app.get("/admin/sites")
     def admin_sites(db: DB, admin: Admin, user_id: int | None = None):
         """Every user's sites: container (awake/asleep) and usage. No file contents."""
