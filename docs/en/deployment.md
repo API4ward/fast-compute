@@ -44,7 +44,7 @@ the log shows `config file: …/.env (loaded)`. Template with every key: `server
 
 | Setting | Default | |
 |---|---|---|
-| `DOCKERSERVER_DATA_DIR` | `data` (under `server/`) | SQLite DB and saved job logs |
+| `DOCKERSERVER_DATA_DIR` | `data` (under `server/`) | SQLite DB, saved job logs, admin settings (`settings.json`) |
 | `DOCKERSERVER_ALLOWED_IMAGES` / `DEFAULT_IMAGE` | `python:3.12-slim` | image allow-list / default |
 | `DOCKERSERVER_MAX_UPLOAD_BYTES` | 50 MB | upload / workspace cap |
 | `DOCKERSERVER_DEFAULT_CREDIT_HOURS` | 1000 | grant for new users |
@@ -57,7 +57,7 @@ the log shows `config file: …/.env (loaded)`. Template with every key: `server
 | `DOCKERSERVER_OAUTH` | `true` | OAuth for MCP custom connectors (claude.ai / Desktop) |
 | `DOCKERSERVER_OAUTH_REDIRECT_HOSTS` | `claude.ai,claude.com` | allowed https redirect hosts at client registration (plus `http://localhost`) |
 | `DOCKERSERVER_OAUTH_ACCESS_TTL` / `_REFRESH_TTL` | 3600 / 2592000 | OAuth token lifetimes (s) |
-| `DOCKERSERVER_SECRET_KEY` | generated on first start | Fernet key encrypting users' environment variables. Written into `.env` automatically if missing. **Back it up with `.env`; if it is lost, stored variables can't be decrypted** (users must set them again). |
+| `DOCKERSERVER_SECRET_KEY` | generated on first start | Fernet key encrypting users' environment variables and the secrets saved in `/admin-ui` → Settings (AWS secret access key, advisor API key in `data/settings.json`). Written into `.env` automatically if missing. **Back it up with `.env`; if it is lost, stored variables and saved secrets can't be decrypted** (users must set their variables again, admins re-enter the keys). |
 | `DOCKERSERVER_NODES` | — | compute nodes (below) |
 | `DOCKERSERVER_LOCAL_EXECUTION` | auto | also use local Docker (default: only when no node is usable) |
 | `DOCKERSERVER_NODE_LOST_GRACE` | 120 | seconds unreachable before a job becomes `lost` |
@@ -65,7 +65,9 @@ the log shows `config file: …/.env (loaded)`. Template with every key: `server
 | `DOCKERSERVER_NODE_INFO_TTL` / `_NODE_POLL_INTERVAL` | 5 / 2 | capacity cache / status poll (s) |
 | `DOCKERSERVER_NODE_HEARTBEAT` | 30 | health probe of every node for the admin Nodes tab (s, 0 = off) |
 
-Apply changes: `sudo systemctl restart dockerserver`.
+Apply changes: `sudo systemctl restart dockerserver`. What admins save in `/admin-ui` → **Settings**
+(AWS credentials, Lambda nodes, homepage advisor) applies without a restart and is kept in
+`server/data/settings.json` (mode 600).
 
 ### Static sites
 
@@ -108,15 +110,22 @@ node-measured run time; jobs are deleted on the node after billing.
 
 #### AWS Lambda node
 
-A node entry with `"type": "lambda"` sends jobs to an AWS Lambda function (one invocation per
-job) instead of a node agent: `{"name":"aws-lambda","type":"lambda","function":"fast-compute-job",
-"bucket":"…","region":"eu-west-2","max_concurrency":10,"network":"none"}`. AWS credentials go in
-`server/.env` as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (or `"profile"`), and the server
-needs `boto3` (in `requirements.txt`). Lambda nodes get jobs only when no Docker node has room;
+A Lambda node sends jobs to an AWS Lambda function (one invocation per job) instead of a node
+agent. `lambda-node/deploy.sh` creates the function, its bucket and roles and an IAM user for the
+server (`LOGS=1` also lets the function write CloudWatch logs). The easiest way to connect it is
+`/admin-ui` → **Settings**: save the AWS access key, add the node, run Diagnose and a test job;
+it takes jobs at once, no restart (see the [admin guide](admin-guide.md#settings)). In
+`server/.env` it is a `DOCKERSERVER_NODES` entry with `"type": "lambda"` (shown read-only in
+Settings): `{"name":"aws-lambda","type":"lambda","function":"fast-compute-job",
+"bucket":"…","region":"eu-west-2","max_concurrency":10,"network":"none"}`, with
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (or `"profile"`). A key saved in Settings takes
+precedence over the `AWS_*` variables, a node's `profile` over both. The server needs `boto3`
+(in `requirements.txt`). Lambda nodes get jobs only when no Docker compute node has room (this
+host's own Docker, when it runs jobs, comes after all nodes, Lambda included);
 a job must fit one invocation (function memory, 1 vCPU per 1769 MB), its timeout must be at most
 the function timeout − 30 s (≤ 870 s), its image `python:3.12-slim`, and its network flag must
-match the function (`none` = isolated VPC, `internet`). Set-up script, design and limits:
-[`lambda-node/README.md`](../../lambda-node/README.md).
+match the function (`none` = isolated VPC, `internet`). Set-up script, design, limits and
+troubleshooting: [`lambda-node/README.md`](../../lambda-node/README.md).
 
 ### OAuth for MCP connectors
 
@@ -195,4 +204,6 @@ desktop user). Node API: see `node/README.md`.
 | Tests | `cd server && .venv/bin/python -m pytest -q` (Docker tests are skipped without Docker access) |
 
 On restart the bridge finishes jobs left active (kills them on the node, marks them `error`) and
-bills anything unbilled. The SQLite database is `server/data/dockerserver.db` — back it up.
+bills anything unbilled. Back up `server/data/` (the SQLite database `dockerserver.db`,
+`settings.json`, …) together with `server/.env`, whose `DOCKERSERVER_SECRET_KEY` decrypts the
+saved secrets.

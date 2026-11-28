@@ -255,8 +255,15 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" $DS/me/sites/gun-fu/publish
 
 ## 6. Web page
 
-https://compute.llmfreedomforge.com/ui — paste your token to see balance, limits, your jobs (click
-one for its logs and a stop button) and usage per day. The token stays only in that browser tab.
+https://compute.llmfreedomforge.com/ui — sign in with your token (it stays only in that browser
+tab). **Welcome** explains how to connect and use fast-compute. **Dashboard** shows your balance,
+the credit-hours available now, jobs run and credit-hours spent, your limits, your jobs (click one
+for its details and logs, and to stop it), your environment variables, your web sites, and usage
+per day (a chart of the last 30 days above the table).
+
+The page is in English and Chinese: the **中文 / EN** button (on the sign-in card and in the top
+bar) switches it. The choice is remembered in the browser and shared with the homepage; the first
+visit follows the browser's language.
 
 ## 7. Troubleshooting
 

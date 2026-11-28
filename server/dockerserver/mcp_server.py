@@ -47,7 +47,9 @@ ADMIN_INSTRUCTIONS = f"""DockerServer administration: users, limits, credits, us
 Admins cannot open, stop or read the logs of an individual user's job. To stop a user's
 activity use set_user_status(active=false) (blocks their tokens and new jobs; running jobs
 continue) or suspend_user (disables the account AND kills all their running jobs, which end
-with status killed_by_admin and are billed for the time they ran). {PRICING}"""
+with status killed_by_admin and are billed for the time they ran). {PRICING}
+AWS Lambda nodes: lambda_settings, diagnose_lambda_node and lambda_function_logs are read-only;
+credentials and nodes are changed in /admin-ui -> Settings."""
 
 
 def _bearer(headers) -> str | None:
@@ -112,6 +114,10 @@ def _caller(svc: Services, admin: bool, path: str):
 
 
 RO = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+RO_AWS = ToolAnnotations(readOnlyHint=True, openWorldHint=True)     # asks AWS
+# diagnostics: writes, reads back and deletes two small probe objects in the node's bucket
+PROBE_AWS = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True,
+                            openWorldHint=True)
 
 
 def _asgi(mcp: MCPServer, svc: Services, path: str, require_admin: bool):
@@ -406,6 +412,35 @@ def build_admin_mcp(svc: Services, path: str = "/mcp-admin"):
                                           openWorldHint=False))
     def set_node_draining(ctx: Context, name: str, draining: bool) -> dict[str, Any]:
         return call(ctx, lambda db, a: svc.set_node_draining(a, name, draining))
+
+    def settings_admin():
+        if svc.admin_settings is None:
+            raise ToolError("admin settings are not available on this server")
+        return svc.admin_settings
+
+    @mcp.tool(description="AWS Lambda setup, read-only (secrets are never shown): which AWS "
+                          "credentials are in effect (saved in Settings, server/.env or none), the "
+                          "Lambda nodes (from server/.env or added in /admin-ui -> Settings) with their "
+                          "function, bucket, region, network, concurrency and active jobs, and the "
+                          "homepage advisor's LLM settings.", annotations=RO)
+    def lambda_settings(ctx: Context) -> dict[str, Any]:
+        return call(ctx, lambda db, a: _jsonable(settings_admin().overview()))
+
+    @mcp.tool(description="Diagnose one AWS Lambda node step by step: boto3, AWS credentials (STS), "
+                          "the function (state, memory/vCPUs, timeout, VPC vs the node's network "
+                          "setting), reserved concurrency, async retries, S3 put/get/delete and a "
+                          "pre-signed URL round trip (two small probe objects under the node's prefix, "
+                          "deleted again). Each step is ok/warn/fail/skip with a hint.",
+              annotations=PROBE_AWS)
+    def diagnose_lambda_node(ctx: Context, name: str) -> dict[str, Any]:
+        return call(ctx, lambda db, a: _jsonable(settings_admin().diagnose(name)))
+
+    @mcp.tool(description="Recent CloudWatch log events of a Lambda node's function (START/END/REPORT "
+                          "lines, timeouts, crashes) for the last `minutes` (1-1440, default 60), "
+                          "newest last, at most 300. The handler never logs job commands or output.",
+              annotations=RO_AWS)
+    def lambda_function_logs(ctx: Context, name: str, minutes: int = 60) -> dict[str, Any]:
+        return call(ctx, lambda db, a: _jsonable(settings_admin().function_logs(name, minutes)))
 
     @mcp.tool(description="Issue a new access token for a user (shown once).")
     def issue_token(ctx: Context, user_id: int, name: str = "mcp") -> dict[str, Any]:

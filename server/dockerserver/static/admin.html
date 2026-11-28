@@ -3,69 +3,98 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DockerServer Admin</title>
+<title>fast-compute · Admin</title>
 <link rel="stylesheet" href="/static/common.css">
 </head>
 <body>
-<div id="login" class="panel hidden">
-  <h2>DockerServer admin</h2>
-  <form id="login-form">
-    <label class="muted" for="token-input">Admin access token</label>
-    <input id="token-input" type="password" autocomplete="off" placeholder="ds_…" required>
-    <button class="btn primary" type="submit">Sign in</button>
-    <p id="login-err" class="muted"></p>
-    <p class="muted">The token is kept in this tab's session storage only.</p>
-  </form>
+<div id="login" class="auth hidden">
+  <div class="glow g1"></div><div class="glow g2"></div>
+  <div class="auth-card">
+    <div class="auth-top">
+      <span class="brand-wrap"><a class="brand" href="/"><span class="logo"><svg viewBox="2 2 28 28" aria-hidden="true"><path d="M17.5 6 9 18h6l-1.5 8L22 14h-6z" fill="#fff"/></svg></span><span>fast-compute</span></a><span class="tag accent" data-i18n="brand.admin">Admin</span></span>
+      <button class="btn ghost sm" type="button" data-lang-switch>中文</button>
+    </div>
+    <h1 data-i18n="login.title">Admin sign-in</h1>
+    <p class="lead" data-i18n="login.sub">Users, credits, compute nodes and settings.</p>
+    <form id="login-form">
+      <label for="token-input" data-i18n="login.adminToken">Admin access token</label>
+      <input id="token-input" type="password" autocomplete="off" placeholder="ds_…" required>
+      <button class="btn primary block" type="submit" data-i18n="login.submit">Sign in</button>
+      <p id="login-err" class="form-err" role="alert"></p>
+    </form>
+    <p class="muted small" data-i18n="login.session">The token is kept in this tab's session storage only.</p>
+    <div class="auth-links"><a href="/" data-i18n="login.home">← Back to the homepage</a></div>
+  </div>
 </div>
 
-<div id="app" class="hidden">
-  <header>
-    <h1>DockerServer admin</h1>
-    <nav>
-      <button data-tab="users" class="active">Users</button>
-      <button data-tab="jobs">Jobs</button>
-      <button data-tab="nodes">Nodes</button>
-      <button data-tab="usage">Usage</button>
-      <button data-tab="sites">Sites</button>
-      <button data-tab="caddy">Caddy</button>
+<div id="app" class="hidden admin-shell">
+  <aside class="sidebar">
+    <div class="side-brand"><a class="brand" href="/"><span class="logo"><svg viewBox="2 2 28 28" aria-hidden="true"><path d="M17.5 6 9 18h6l-1.5 8L22 14h-6z" fill="#fff"/></svg></span><span>fast-compute</span></a><span class="tag accent" data-i18n="brand.admin">Admin</span></div>
+    <nav class="side-nav" data-i18n-aria="nav.label">
+      <button data-tab="users" class="active"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M18 14.2a6.5 6.5 0 0 1 3.5 5.8"/></svg><span data-i18n="nav.users">Users</span></button>
+      <button data-tab="jobs"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7.5 9.5 3 2.5-3 2.5"/><path d="M13 15h4"/></svg><span data-i18n="nav.jobs">Jobs</span></button>
+      <button data-tab="nodes"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><path d="M17.5 14v7M14 17.5h7"/></svg><span data-i18n="nav.nodes">Nodes</span></button>
+      <button data-tab="usage"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20h18"/><path d="M6.5 16v-5"/><path d="M11.5 16V6"/><path d="M16.5 16v-8"/></svg><span data-i18n="nav.usage">Usage</span></button>
+      <button data-tab="sites"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span data-i18n="nav.sites">Sites</span></button>
+      <button data-tab="caddy"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg><span data-i18n="nav.caddy">Caddy</span></button>
+      <button data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="16" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg><span data-i18n="nav.settings">Settings</span></button>
     </nav>
-    <span class="who" id="who"></span>
-    <button class="btn" id="logout">Sign out</button>
-  </header>
-  <main>
+    <div class="side-foot">
+      <span class="who-chip"><span class="avatar" id="who-avatar"></span><span id="who"></span></span>
+      <div class="btn-row">
+        <button class="btn ghost sm" type="button" data-lang-switch>中文</button>
+        <button class="btn ghost sm" id="logout" data-i18n-title="btn.signout" data-i18n-aria="btn.signout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 20H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h3"/><path d="m15 16 4-4-4-4"/><path d="M19 12H9"/></svg><span class="lbl" data-i18n="btn.signout">Sign out</span></button>
+      </div>
+    </div>
+  </aside>
+  <main class="admin-main">
     <!-- USERS -->
     <section data-tab="users">
-      <div class="panel">
-        <h2>Create user</h2>
+      <div class="page-head">
+        <div><h1 data-i18n="users.title">Users</h1><p data-i18n="users.sub">Accounts, limits, credits and access tokens.</p></div>
+      </div>
+      <div class="card">
+        <h2 data-i18n="users.create">Create user</h2>
         <form id="create-form" class="row">
-          <label>Name <input name="name" required pattern="[A-Za-z0-9_.@-]+"></label>
-          <label>Role <select name="role"><option value="user">user</option><option value="admin">admin</option></select></label>
-          <label>Max CPUs <input name="max_cpus" type="number" step="0.1" min="0.1" value="1"></label>
-          <label>Max MB <input name="max_mem_mb" type="number" step="32" min="32" value="256"></label>
-          <label>Max run s <input name="max_run_seconds" type="number" min="1" value="600"></label>
-          <label>Concurrent <input name="max_concurrent_jobs" type="number" min="1" value="2"></label>
-          <label>Network <select name="allow_network"><option value="false">no</option><option value="true">yes</option></select></label>
-          <label>Max sites <input name="max_sites" type="number" min="0" value="3"></label>
-          <button class="btn primary" type="submit">Create</button>
+          <label><span data-i18n="f.name">Name</span><input name="name" required pattern="[A-Za-z0-9_.@\-]+"></label>
+          <label><span data-i18n="f.role">Role</span><select name="role"><option value="user" data-i18n="role.user">user</option><option value="admin" data-i18n="role.admin">admin</option></select></label>
+          <label><span data-i18n="f.maxCpus">Max CPUs</span><input name="max_cpus" type="number" step="0.1" min="0.1" value="1"></label>
+          <label><span data-i18n="f.maxMb">Max MB</span><input name="max_mem_mb" type="number" step="32" min="32" value="256"></label>
+          <label><span data-i18n="f.maxRun">Max run s</span><input name="max_run_seconds" type="number" min="1" value="600"></label>
+          <label><span data-i18n="f.conc">Concurrent</span><input name="max_concurrent_jobs" type="number" min="1" value="2"></label>
+          <label><span data-i18n="f.network">Network</span><select name="allow_network"><option value="false" data-i18n="no">no</option><option value="true" data-i18n="yes">yes</option></select></label>
+          <label><span data-i18n="f.maxSites">Max sites</span><input name="max_sites" type="number" min="0" value="3"></label>
+          <button class="btn primary" type="submit" data-i18n="btn.create">Create</button>
         </form>
         <div id="new-token"></div>
       </div>
-      <div class="panel"><h2>Users</h2><div id="users"></div></div>
-      <div class="panel hidden" id="user-detail"></div>
+      <div class="card"><h2 data-i18n="users.list">All users</h2><div id="users"></div></div>
+      <div class="card hidden" id="user-detail"></div>
     </section>
 
     <!-- JOBS -->
     <section data-tab="jobs" class="hidden">
-      <div class="panel">
-        <div class="row" style="margin-bottom:12px">
-          <h2 style="margin:0">Recent jobs (all users, read-only)</h2>
-          <label>Status <select id="job-status">
-            <option value="">any</option><option>running</option><option>queued</option><option>succeeded</option>
-            <option>failed</option><option>timeout</option><option>stopped</option><option>out_of_credits</option><option>killed_by_admin</option><option>lost</option><option>error</option>
+      <div class="page-head">
+        <div><h1 data-i18n="jobs.title">Jobs</h1><p data-i18n="jobs.sub">Recent jobs of all users, read-only.</p></div>
+        <div class="actions">
+          <label class="inline"><span data-i18n="col.status">Status</span> <select id="job-status">
+            <option value="" data-i18n="jobs.any">any</option>
+            <option value="running" data-i18n="status.running">running</option>
+            <option value="queued" data-i18n="status.queued">queued</option>
+            <option value="succeeded" data-i18n="status.succeeded">succeeded</option>
+            <option value="failed" data-i18n="status.failed">failed</option>
+            <option value="timeout" data-i18n="status.timeout">timeout</option>
+            <option value="stopped" data-i18n="status.stopped">stopped</option>
+            <option value="out_of_credits" data-i18n="status.out_of_credits">out_of_credits</option>
+            <option value="killed_by_admin" data-i18n="status.killed_by_admin">killed_by_admin</option>
+            <option value="lost" data-i18n="status.lost">lost</option>
+            <option value="error" data-i18n="status.error">error</option>
           </select></label>
-          <button class="btn" id="jobs-refresh">Refresh</button>
+          <button class="btn" id="jobs-refresh" data-i18n="btn.refresh">Refresh</button>
         </div>
-        <p class="muted">Admins see job metadata only — no commands, code or logs, and cannot stop a
+      </div>
+      <div class="card">
+        <p class="alert info" data-i18n="jobs.note">Admins see job metadata only — no commands, code or logs, and cannot stop a
           single job. To stop a user's work, suspend the user (Users → Open).</p>
         <div id="jobs"></div>
       </div>
@@ -73,91 +102,116 @@
 
     <!-- NODES -->
     <section data-tab="nodes" class="hidden">
-      <div class="panel">
-        <div class="row" style="margin-bottom:12px">
-          <h2 style="margin:0">Compute nodes</h2>
-          <button class="btn" id="nodes-refresh">Check now</button>
-          <label class="inline"><input type="checkbox" id="nodes-auto" checked> auto-refresh (20 s)</label>
-          <span class="muted" id="nodes-checked"></span>
+      <div class="page-head">
+        <div><h1 data-i18n="nodes.title">Compute nodes</h1><p data-i18n="nodes.sub">Where jobs run: health, capacity and the jobs on each node.</p></div>
+        <div class="actions">
+          <span class="muted small" id="nodes-checked"></span>
+          <label class="inline"><input type="checkbox" id="nodes-auto" checked> <span data-i18n="nodes.auto">auto-refresh (20 s)</span></label>
+          <button class="btn" id="nodes-refresh" data-i18n="nodes.check">Check now</button>
         </div>
-        <div id="nodes-summary"></div>
-        <p class="muted">Capacity, used and free are what each node reports on <code>/v1/info</code>; "jobs here"
-          are the jobs this server has running on it. A <b>draining</b> node gets no new jobs and its running
-          jobs finish normally. Nodes are configured in <code>server/.env</code> (<code>DOCKERSERVER_NODES</code>).
-          An <b>AWS Lambda</b> node runs one job per invocation; it shows its concurrency slots instead of CPU/memory
-          and gets jobs only when no Docker node has room.</p>
+      </div>
+      <div class="card"><div id="nodes-summary"></div></div>
+      <div class="card">
+        <p class="card-desc" data-i18n-rich="nodes.desc">Capacity, used and free are what each node reports on /v1/info.</p>
         <div id="nodes"></div>
       </div>
-      <div class="panel"><h2>Jobs running on nodes</h2><div id="nodes-jobs"></div></div>
+      <div class="card"><h2 data-i18n="nodes.jobsTitle">Jobs running on nodes</h2><div id="nodes-jobs"></div></div>
     </section>
 
     <!-- USAGE -->
     <section data-tab="usage" class="hidden">
-      <div class="panel">
-        <h2>Usage report</h2>
+      <div class="page-head">
+        <div><h1 data-i18n="usage.title">Usage report</h1><p data-i18n="usage.sub">Jobs counted by start time. Cost in credit-hours (1 h = 1 CPU + 256 MB for 1 hour).</p></div>
+      </div>
+      <div class="card">
         <form id="usage-form" class="row">
-          <label>From (UTC) <input type="date" name="start"></label>
-          <label>To (exclusive) <input type="date" name="end"></label>
-          <button class="btn primary" type="submit">Run</button>
+          <label><span data-i18n="usage.from">From (UTC)</span><input type="date" name="start"></label>
+          <label><span data-i18n="usage.to">To (exclusive)</span><input type="date" name="end"></label>
+          <button class="btn primary" type="submit" data-i18n="btn.run">Run</button>
         </form>
-        <p class="muted">Jobs counted by start time. Cost in credit-hours (1 h = 1 CPU + 256 MB for 1 hour).</p>
-        <div id="usage"></div>
+        <div id="usage" style="margin-top:16px"></div>
       </div>
     </section>
+
     <!-- SITES -->
     <section data-tab="sites" class="hidden">
-      <div class="panel">
-        <div class="row" style="margin-bottom:12px">
-          <h2 style="margin:0">Site containers per user</h2>
-          <button class="btn" id="sites-refresh">Refresh</button>
-        </div>
-        <p class="muted">Each static site runs in its own small nginx container (32 MB, 0.25 CPU) that
+      <div class="page-head">
+        <div><h1 data-i18n="sites.title">Sites</h1><p data-i18n="sites.sub">Static web sites of all users: containers and usage.</p></div>
+        <div class="actions"><button class="btn" id="sites-refresh" data-i18n="btn.refresh">Refresh</button></div>
+      </div>
+      <div class="card">
+        <h2 data-i18n="sites.perUser">Site containers per user</h2>
+        <p class="card-desc" data-i18n="sites.desc">Each static site runs in its own small nginx container (32 MB, 0.25 CPU) that
           starts on the first visit and is stopped after an idle hour. Admins see metadata and usage
           only; deleting a user removes their sites and containers.</p>
         <div id="sites-summary"></div>
       </div>
-      <div class="panel"><h2>All sites</h2><div id="sites"></div></div>
+      <div class="card"><h2 data-i18n="sites.all">All sites</h2><div id="sites"></div></div>
     </section>
+
     <!-- CADDY -->
     <section data-tab="caddy" class="hidden">
-      <div class="panel">
-        <div class="row" style="margin-bottom:12px">
-          <h2 style="margin:0">Caddy (HTTPS front door)</h2>
-          <button class="btn" id="caddy-refresh">Refresh</button>
-          <button class="btn hidden" id="caddy-reload">Load file into Caddy</button>
+      <div class="page-head">
+        <div><h1 data-i18n="caddy.title">Caddy</h1><p data-i18n="caddy.sub">The HTTPS front door: status, running sites and the Caddyfile.</p></div>
+        <div class="actions">
+          <button class="btn hidden" id="caddy-reload" data-i18n="caddy.reload">Load file into Caddy</button>
+          <button class="btn" id="caddy-refresh" data-i18n="btn.refresh">Refresh</button>
         </div>
+      </div>
+      <div class="card">
         <div id="caddy-status"></div>
-        <h3>Running sites</h3>
+        <h3 data-i18n="caddy.running">Running sites</h3>
         <div id="caddy-sites"></div>
       </div>
-      <div class="panel">
+      <div class="card">
         <h2>Caddyfile</h2>
-        <p class="muted">Validate checks the syntax without changing anything. Apply loads the config into
-          Caddy first (Caddy keeps the old config if the new one fails) and only then saves the file; the
-          previous file is kept as a backup below. Validate and Apply always use Caddy's whole root config, so
-          sites from other imported Caddyfiles stay. Use absolute paths in <code>import</code> lines.</p>
+        <p class="card-desc" data-i18n-rich="caddy.desc">Validate checks the syntax without changing anything.</p>
         <textarea id="caddy-editor" class="code" spellcheck="false" autocomplete="off" rows="28"></textarea>
-        <div class="row" style="margin-top:8px">
-          <button class="btn" id="caddy-validate">Validate</button>
-          <button class="btn primary" id="caddy-apply">Apply</button>
-          <button class="btn" id="caddy-revert">Discard edits</button>
+        <div class="row" style="margin-top:10px;align-items:center">
+          <button class="btn" id="caddy-validate" data-i18n="caddy.validate">Validate</button>
+          <button class="btn primary" id="caddy-apply" data-i18n="btn.apply">Apply</button>
+          <button class="btn" id="caddy-revert" data-i18n="caddy.revert">Discard edits</button>
           <span class="muted" id="caddy-dirty"></span>
         </div>
         <div id="caddy-result" style="margin-top:12px"></div>
       </div>
-      <div class="panel"><h2>Backups</h2><div id="caddy-backups"></div></div>
+      <div class="card"><h2 data-i18n="caddy.backups">Backups</h2><div id="caddy-backups"></div></div>
+    </section>
+
+    <!-- SETTINGS (admin-settings.js) -->
+    <section data-tab="settings" class="hidden">
+      <div class="page-head">
+        <div><h1 data-i18n="set.title">Settings</h1><p data-i18n="set.sub">AWS account, Lambda compute nodes and the homepage advisor. Changes apply at once, without a restart.</p></div>
+        <div class="actions"><button class="btn" id="settings-refresh" data-i18n="btn.refresh">Refresh</button></div>
+      </div>
+      <div class="toc">
+        <button type="button" data-goto="set-aws" data-i18n="set.aws.title">AWS account</button>
+        <button type="button" data-goto="set-lambda" data-i18n="set.l.title">Lambda nodes</button>
+        <button type="button" data-goto="set-deploy" data-i18n="set.dep.title">Deploy helper</button>
+        <button type="button" data-goto="set-advisor" data-i18n="set.adv.title">Homepage advisor</button>
+      </div>
+      <div id="settings-error"></div>
+      <div class="card" id="set-aws"><h2 data-i18n="set.aws.title">AWS account</h2></div>
+      <div class="card" id="set-lambda"><h2 data-i18n="set.l.title">Lambda nodes</h2></div>
+      <div class="card" id="set-deploy"><h2 data-i18n="set.dep.title">Deploy helper</h2></div>
+      <div class="card" id="set-advisor"><h2 data-i18n="set.adv.title">Homepage advisor</h2></div>
     </section>
   </main>
 </div>
 
 <script src="/static/common.js"></script>
+<script src="/static/admin-i18n.js"></script>
+<script src="/static/admin-settings.js"></script>
 <script>
+document.title = t("page.title");
 let userNames = {};
 
+function reasonLabel(r) { return hasT("reason." + r) ? t("reason." + r) : r; }
+
 function adminJobsTable(jobs) {
-  if (!jobs.length) return el("p", { class: "muted" }, "No jobs.");
-  return table(["ID", "User", "Status", "Image", "Node", "CPU", "MB", "Started", { label: "Run", num: true },
-    { label: "Cost h", num: true }, { label: "CPU% avg/peak", num: true }, { label: "Mem MB peak", num: true }],
+  if (!jobs.length) return el("p", { class: "empty" }, t("jobs.none"));
+  return table([t("col.id"), t("col.user"), t("col.status"), t("col.image"), t("col.node"), t("col.cpu"), t("col.mb"), t("col.started"),
+    { label: t("col.run"), num: true }, { label: t("col.cost"), num: true }, { label: t("col.cpuPct"), num: true }, { label: t("col.memPeak"), num: true }],
     jobs.map(j => el("tr", {}, td(j.id), td(userNames[j.user_id] || j.user_id), td(statusBadge(j.status)),
       td(j.image), td(j.node || "–"), td(j.cpus), td(j.mem_mb), td(fmtTime(j.started_at)), td(fmtDur(j.duration_seconds), "num"),
       td(fmtH(j.cost_hours), "num"),
@@ -171,35 +225,37 @@ async function loadUsers() {
     const users = await api("/admin/users");
     userNames = Object.fromEntries(users.map(u => [u.id, u.name]));
     clear(box).append(table(
-      ["ID", "Name", "Role", "Active", { label: "Balance h", num: true }, { label: "Max CPU", num: true },
-       { label: "Max MB", num: true }, { label: "Max run s", num: true }, { label: "Conc.", num: true }, "Net", ""],
+      [t("col.id"), t("f.name"), t("f.role"), t("u.state"), { label: t("u.balance"), num: true }, { label: t("u.maxCpu"), num: true },
+       { label: t("f.maxMb"), num: true }, { label: t("f.maxRun"), num: true }, { label: t("u.conc"), num: true }, t("u.net"), ""],
       users.map(u => el("tr", {},
-        td(u.id), td(u.name), td(u.role), td(u.active ? "yes" : el("span", { class: "s-error" }, "disabled")),
+        td(u.id), td(u.name), td(roleLabel(u.role)),
+        td(u.active ? el("span", { class: "badge s-succeeded", title: "active" }, t("u.active"))
+          : el("span", { class: "badge s-error", title: "disabled" }, t("u.disabled"))),
         td(fmtH(u.balance_hours, 3), "num"), td(u.max_cpus, "num"), td(u.max_mem_mb, "num"),
-        td(u.max_run_seconds, "num"), td(u.max_concurrent_jobs, "num"), td(u.allow_network ? "yes" : "no"),
-        td(el("button", { class: "btn", onclick: () => openUser(u.id) }, "Open"))))));
-  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+        td(u.max_run_seconds, "num"), td(u.max_concurrent_jobs, "num"), td(u.allow_network ? t("yes") : t("no")),
+        td(el("button", { class: "btn sm", onclick: () => openUser(u.id) }, t("btn.open")))))));
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, errText(e))); }
 }
 
 async function openUser(id) {
   const box = $("user-detail");
   clear(box).classList.remove("hidden");
   let u;
-  try { u = await api(`/admin/users/${id}`); } catch (e) { box.append(el("p", {}, e.message)); return; }
+  try { u = await api(`/admin/users/${id}`); } catch (e) { box.append(el("p", { class: "s-error" }, errText(e))); return; }
   const num = (name, step, val) => el("input", { name, type: "number", step, value: val });
   const limitsForm = el("form", { class: "row" },
-    el("label", {}, "Max CPUs", num("max_cpus", "0.1", u.max_cpus)),
-    el("label", {}, "Max MB", num("max_mem_mb", "32", u.max_mem_mb)),
-    el("label", {}, "Max run s", num("max_run_seconds", "1", u.max_run_seconds)),
-    el("label", {}, "Concurrent", num("max_concurrent_jobs", "1", u.max_concurrent_jobs)),
-    el("label", {}, "Max sites", num("max_sites", "1", u.max_sites)),
-    el("label", {}, "Network", el("select", { name: "allow_network" },
-      el("option", { value: "false", selected: !u.allow_network }, "no"),
-      el("option", { value: "true", selected: u.allow_network }, "yes"))),
-    el("label", {}, "Role", el("select", { name: "role" },
-      el("option", { value: "user", selected: u.role === "user" }, "user"),
-      el("option", { value: "admin", selected: u.role === "admin" }, "admin"))),
-    el("button", { class: "btn primary", type: "submit" }, "Save limits"));
+    el("label", {}, t("f.maxCpus"), num("max_cpus", "0.1", u.max_cpus)),
+    el("label", {}, t("f.maxMb"), num("max_mem_mb", "32", u.max_mem_mb)),
+    el("label", {}, t("f.maxRun"), num("max_run_seconds", "1", u.max_run_seconds)),
+    el("label", {}, t("f.conc"), num("max_concurrent_jobs", "1", u.max_concurrent_jobs)),
+    el("label", {}, t("f.maxSites"), num("max_sites", "1", u.max_sites)),
+    el("label", {}, t("f.network"), el("select", { name: "allow_network" },
+      el("option", { value: "false", selected: !u.allow_network }, t("no")),
+      el("option", { value: "true", selected: u.allow_network }, t("yes")))),
+    el("label", {}, t("f.role"), el("select", { name: "role" },
+      el("option", { value: "user", selected: u.role === "user" }, t("role.user")),
+      el("option", { value: "admin", selected: u.role === "admin" }, t("role.admin")))),
+    el("button", { class: "btn primary", type: "submit" }, t("u.saveLimits")));
   limitsForm.addEventListener("submit", async ev => {
     ev.preventDefault();
     const f = new FormData(limitsForm);
@@ -208,100 +264,101 @@ async function openUser(id) {
         max_cpus: +f.get("max_cpus"), max_mem_mb: +f.get("max_mem_mb"), max_run_seconds: +f.get("max_run_seconds"),
         max_concurrent_jobs: +f.get("max_concurrent_jobs"), allow_network: f.get("allow_network") === "true",
         max_sites: +f.get("max_sites"), role: f.get("role") } });
-      showMsg(box, "Saved.", true); loadUsers();
-    } catch (e) { showMsg(box, e.message); }
+      showMsg(box, t("u.saved"), true); loadUsers();
+    } catch (e) { showMsg(box, errText(e)); }
   });
 
   const creditForm = el("form", { class: "row" },
-    el("label", {}, "Hours (negative deducts)", el("input", { name: "hours", type: "number", step: "any", required: true })),
-    el("label", {}, "Reason", el("select", { name: "reason" }, el("option", {}, "topup"), el("option", {}, "adjust"))),
-    el("label", {}, "Note", el("input", { name: "note", maxlength: 500, style: "width:260px" })),
-    el("button", { class: "btn primary", type: "submit" }, "Apply"));
+    el("label", {}, t("u.hours"), el("input", { name: "hours", type: "number", step: "any", required: true })),
+    el("label", {}, t("u.reason"), el("select", { name: "reason" },
+      el("option", { value: "topup" }, t("reason.topup")), el("option", { value: "adjust" }, t("reason.adjust")))),
+    el("label", {}, t("u.note"), el("input", { name: "note", maxlength: 500, style: "width:260px" })),
+    el("button", { class: "btn primary", type: "submit" }, t("btn.apply")));
   creditForm.addEventListener("submit", async ev => {
     ev.preventDefault();
     const f = new FormData(creditForm);
     try {
       const e = await api(`/admin/users/${id}/credits`, { method: "POST",
         body: { hours: +f.get("hours"), reason: f.get("reason"), note: f.get("note") || null } });
-      showMsg(box, `New balance: ${fmtH(e.balance_after_hours)} h`, true);
+      showMsg(box, t("u.newBalance", { v: fmtH(e.balance_after_hours) }), true);
       openUser(id); loadUsers();
-    } catch (e) { showMsg(box, e.message); }
+    } catch (e) { showMsg(box, errText(e)); }
   });
 
   const toggle = el("button", { class: "btn " + (u.active ? "danger" : ""), onclick: async () => {
-    if (u.active && !confirm(`Disable ${u.name}? Their tokens stop working; running jobs continue.`)) return;
+    if (u.active && !confirm(t("u.confirmDisable", { name: u.name }))) return;
     try { await api(`/admin/users/${id}/${u.active ? "disable" : "enable"}`, { method: "POST" }); openUser(id); loadUsers(); }
-    catch (e) { showMsg(box, e.message); }
-  } }, u.active ? "Disable account" : "Enable account");
+    catch (e) { showMsg(box, errText(e)); }
+  } }, u.active ? t("u.disable") : t("u.enable"));
   const suspend = el("button", { class: "btn danger", onclick: async () => {
-    if (!confirm(`Suspend ${u.name}? This disables the account AND kills all of their running jobs.`)) return;
+    if (!confirm(t("u.confirmSuspend", { name: u.name }))) return;
     suspend.disabled = true;
     try {
       const r = await api(`/admin/users/${id}/suspend`, { method: "POST" });
-      showMsg(box, `Suspended. Killed jobs: ${r.killed_job_ids.length ? r.killed_job_ids.join(", ") : "none"}`, true);
+      showMsg(box, t("u.suspended", { ids: r.killed_job_ids.length ? r.killed_job_ids.join(", ") : t("none") }), true);
       openUser(id); loadUsers();
-    } catch (e) { showMsg(box, e.message); suspend.disabled = false; }
-  } }, "Suspend (kill all jobs)");
+    } catch (e) { showMsg(box, errText(e)); suspend.disabled = false; }
+  } }, t("u.suspend"));
 
   const del = el("button", { class: "btn danger", onclick: async () => {
-    if (!confirm(`Delete ${u.name}? This kills their running jobs and permanently deletes their sites ` +
-                 `(containers and files), saved variables and tokens. Job and credit history is kept.`)) return;
-    if (prompt(`Type the user name (${u.name}) to confirm`) !== u.name) return;
+    if (!confirm(t("u.confirmDelete", { name: u.name }))) return;
+    if (prompt(t("u.typeName", { name: u.name })) !== u.name) return;
     del.disabled = true;
     try {
       const r = await api(`/admin/users/${id}`, { method: "DELETE" });
       box.classList.add("hidden");
-      showMsg($("users"), `Deleted ${r.deleted_user}: ${r.killed_job_ids.length} job(s) killed, ` +
-        `${r.deleted_sites.length} site(s) removed.`, true);
+      showMsg($("users"), t("u.deleted", { name: r.deleted_user, jobs: r.killed_job_ids.length, sites: r.deleted_sites.length }), true);
       loadUsers();
-    } catch (e) { showMsg(box, e.message); del.disabled = false; }
-  } }, "Delete user");
+    } catch (e) { showMsg(box, errText(e)); del.disabled = false; }
+  } }, t("u.delete"));
 
   const tokenOut = el("div");
   const newTok = el("button", { class: "btn", onclick: async () => {
     try {
-      const t = await api(`/admin/users/${id}/tokens`, { method: "POST", body: { name: "admin-ui" } });
-      clear(tokenOut).append(el("p", {}, "New token (shown once — copy it now):"), el("div", { class: "token" }, t.token));
+      const tok = await api(`/admin/users/${id}/tokens`, { method: "POST", body: { name: "admin-ui" } });
+      clear(tokenOut).append(el("p", {}, t("u.newToken")), el("div", { class: "token" }, tok.token));
       loadTokens();
-    } catch (e) { showMsg(box, e.message); }
-  } }, "Issue new token");
+    } catch (e) { showMsg(box, errText(e)); }
+  } }, t("u.issueToken"));
 
   const tokensBox = el("div"), ledgerBox = el("div"), jobsBox = el("div"), sitesBox = el("div");
   async function loadTokens() {
     const toks = await api(`/admin/users/${id}/tokens`);
-    clear(tokensBox).append(table(["ID", "Name", "Prefix", "Created", "Last used", "Status", ""],
-      toks.map(t => el("tr", {}, td(t.id), td(t.name), td(t.prefix + "…"), td(fmtTime(t.created_at)),
-        td(fmtTime(t.last_used_at)), td(t.revoked_at ? "revoked" : "active"),
-        td(t.revoked_at ? "" : el("button", { class: "btn danger", onclick: async () => {
-          if (!confirm(`Revoke token ${t.prefix}…?`)) return;
-          try { await api(`/admin/tokens/${t.id}`, { method: "DELETE" }); loadTokens(); }
-          catch (e) { showMsg(box, e.message); }
-        } }, "Revoke"))))));
+    clear(tokensBox).append(table([t("col.id"), t("f.name"), t("tok.prefix"), t("tok.created"), t("tok.lastUsed"), t("col.status"), ""],
+      toks.map(tk => el("tr", {}, td(tk.id), td(tk.name), td(tk.prefix + "…"), td(fmtTime(tk.created_at)),
+        td(fmtTime(tk.last_used_at)),
+        td(tk.revoked_at ? el("span", { class: "badge s-stopped", title: "revoked" }, t("tok.revoked"))
+          : el("span", { class: "badge s-succeeded", title: "active" }, t("tok.active"))),
+        td(tk.revoked_at ? "" : el("button", { class: "btn sm danger", onclick: async () => {
+          if (!confirm(t("tok.confirmRevoke", { prefix: tk.prefix }))) return;
+          try { await api(`/admin/tokens/${tk.id}`, { method: "DELETE" }); loadTokens(); }
+          catch (e) { showMsg(box, errText(e)); }
+        } }, t("tok.revoke")))))));
   }
 
   box.append(
-    el("div", { class: "row" }, el("h2", { style: "margin:0" }, `${u.name} `, el("span", { class: "muted" }, `#${u.id} · ${u.role}`)),
-      el("button", { class: "btn", onclick: () => box.classList.add("hidden") }, "Close")),
-    el("div", { class: "stats", style: "margin:12px 0" },
-      el("div", { class: "stat" }, el("div", { class: "v" }, fmtH(u.balance_hours, 3)), el("div", { class: "k" }, "balance (credit-hours)")),
-      el("div", { class: "stat" }, el("div", { class: "v" }, u.active ? "active" : "disabled"), el("div", { class: "k" }, "status"))),
-    el("h3", {}, "Limits"), limitsForm,
-    el("h3", {}, "Credits"), creditForm,
-    el("h3", {}, "Access"), el("div", { class: "row" }, toggle, suspend, newTok, del), tokenOut, tokensBox,
-    el("h3", {}, "Sites (containers)"), sitesBox,
-    el("h3", {}, "Ledger"), ledgerBox,
-    el("h3", {}, "Recent jobs"), jobsBox);
+    el("div", { class: "card-head" }, el("h2", {}, u.name), el("span", { class: "muted" }, `#${u.id} · ${roleLabel(u.role)}`),
+      el("div", { class: "end" }, el("button", { class: "btn sm ghost", onclick: () => box.classList.add("hidden") }, t("btn.close")))),
+    el("div", { class: "stats", style: "margin:4px 0 8px" },
+      el("div", { class: "stat" }, el("div", { class: "v" }, fmtH(u.balance_hours, 3)), el("div", { class: "k" }, t("u.balanceK"))),
+      el("div", { class: "stat" }, el("div", { class: "v" }, u.active ? t("u.active") : t("u.disabled")), el("div", { class: "k" }, t("u.statusK")))),
+    el("h3", {}, t("u.limits")), limitsForm,
+    el("h3", {}, t("u.credits")), creditForm,
+    el("h3", {}, t("u.access")), el("div", { class: "btn-row" }, toggle, suspend, newTok, del), tokenOut, tokensBox,
+    el("h3", {}, t("u.sites")), sitesBox,
+    el("h3", {}, t("u.ledger")), ledgerBox,
+    el("h3", {}, t("u.jobs")), jobsBox);
 
-  loadTokens().catch(e => showMsg(box, e.message));
+  loadTokens().catch(e => showMsg(box, errText(e)));
   api(`/admin/users/${id}/ledger?limit=100`).then(rows => clear(ledgerBox).append(rows.length ? table(
-    ["When", "Reason", { label: "Δ hours", num: true }, { label: "Balance after", num: true }, "Job", "Admin", "Note"],
-    rows.map(r => el("tr", {}, td(fmtTime(r.created_at)), td(r.reason), td(fmtH(r.delta_hours, 6), "num"),
+    [t("led.when"), t("u.reason"), { label: t("led.delta"), num: true }, { label: t("led.after"), num: true }, t("led.job"), t("led.admin"), t("u.note")],
+    rows.map(r => el("tr", {}, td(fmtTime(r.created_at)), td(el("span", { title: r.reason }, reasonLabel(r.reason))), td(fmtH(r.delta_hours, 6), "num"),
       td(fmtH(r.balance_after_hours, 4), "num"), td(r.job_id ?? ""), td(r.admin_id ? (userNames[r.admin_id] || r.admin_id) : ""),
-      td(r.note || "", "wrap")))) : el("p", { class: "muted" }, "No entries."))).catch(e => showMsg(box, e.message));
+      td(r.note || "", "wrap")))) : el("p", { class: "empty" }, t("led.none")))).catch(e => showMsg(box, errText(e)));
   api(`/admin/sites?user_id=${id}`).then(s => clear(sitesBox).append(sitesTable(s, { showUser: false })))
-    .catch(e => showMsg(box, e.message));
+    .catch(e => showMsg(box, errText(e)));
   api(`/admin/jobs?user_id=${id}&limit=20`).then(jobs => clear(jobsBox).append(adminJobsTable(jobs)))
-    .catch(e => showMsg(box, e.message));
+    .catch(e => showMsg(box, errText(e)));
   box.scrollIntoView({ behavior: "smooth" });
 }
 
@@ -311,7 +368,7 @@ async function loadJobs() {
   try {
     const jobs = await api(`/admin/jobs?limit=100${st ? "&status=" + encodeURIComponent(st) : ""}`);
     clear(box).append(adminJobsTable(jobs));
-  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, errText(e))); }
 }
 
 async function loadUsage(ev) {
@@ -323,13 +380,13 @@ async function loadUsage(ev) {
   const box = $("usage");
   try {
     const r = await api("/admin/usage?" + q);
-    const row = (name, t, bal) => el("tr", {}, td(name), td(t.jobs, "num"), td(fmtDur(t.run_seconds), "num"),
-      td(fmtH(t.cpu_hours), "num"), td(fmtH(t.mem_gb_hours), "num"), td(fmtH(t.cost_hours), "num"),
+    const row = (name, tot, bal) => el("tr", {}, td(name), td(tot.jobs, "num"), td(fmtDur(tot.run_seconds), "num"),
+      td(fmtH(tot.cpu_hours), "num"), td(fmtH(tot.mem_gb_hours), "num"), td(fmtH(tot.cost_hours), "num"),
       td(bal == null ? "" : fmtH(bal, 3), "num"));
-    clear(box).append(table(["User", { label: "Jobs", num: true }, { label: "Run time", num: true },
-      { label: "CPU-hours", num: true }, { label: "GB-hours", num: true }, { label: "Cost h", num: true }, { label: "Balance h", num: true }],
-      r.users.map(u => row(u.name, u, u.balance_hours)).concat([row(el("b", {}, "Total"), r.total, null)])));
-  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+    clear(box).append(table([t("col.user"), { label: t("ucol.jobs"), num: true }, { label: t("ucol.runtime"), num: true },
+      { label: t("ucol.cpuh"), num: true }, { label: t("ucol.gbh"), num: true }, { label: t("col.cost"), num: true }, { label: t("u.balance"), num: true }],
+      r.users.map(u => row(u.name, u, u.balance_hours)).concat([row(el("b", {}, t("ucol.total")), r.total, null)])));
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, errText(e))); }
 }
 
 function fmtBytes(b) {
@@ -341,16 +398,16 @@ function fmtBytes(b) {
 }
 
 function sitesTable(sites, { showUser = true } = {}) {
-  if (!sites.length) return el("p", { class: "muted" }, "No sites.");
-  return table((showUser ? ["User"] : []).concat(["Site", "Container", "Published", { label: "Files", num: true },
-    { label: "Size", num: true }, { label: "Requests", num: true }, { label: "Served", num: true },
-    { label: "Wake-ups", num: true }, { label: "Awake h", num: true }, { label: "Cost h", num: true }, "Last visit"]),
+  if (!sites.length) return el("p", { class: "empty" }, t("sites.none"));
+  return table((showUser ? [t("col.user")] : []).concat([t("scol.site"), t("scol.container"), t("scol.published"), { label: t("scol.files"), num: true },
+    { label: t("scol.size"), num: true }, { label: t("scol.requests"), num: true }, { label: t("scol.served"), num: true },
+    { label: t("scol.wakeups"), num: true }, { label: t("scol.awakeH"), num: true }, { label: t("col.cost"), num: true }, t("scol.last")]),
     sites.map(s => el("tr", {},
       showUser ? td(s.user) : null,
       td(s.published ? el("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.site) : s.site),
-      td(el("span", {}, el("span", { class: "badge " + (s.awake ? "s-running" : "s-stopped") }, s.awake ? "awake" : "asleep"),
-         " ", el("span", { class: "muted" }, s.container))),
-      td(s.published ? "yes" : "no"), td(s.file_count, "num"), td(fmtBytes(s.bytes_stored), "num"),
+      td(el("span", {}, el("span", { class: "badge " + (s.awake ? "s-running" : "s-stopped"), title: s.awake ? "awake" : "asleep" },
+          s.awake ? t("site.awake") : t("site.asleep")), " ", el("span", { class: "muted" }, s.container))),
+      td(s.published ? t("yes") : t("no")), td(s.file_count, "num"), td(fmtBytes(s.bytes_stored), "num"),
       td(s.requests, "num"), td(fmtBytes(s.bytes_served), "num"), td(s.wake_count, "num"),
       td(fmtH(s.awake_hours, 2), "num"), td(fmtH(s.cost_hours, 3), "num"), td(fmtTime(s.last_access_at)))));
 }
@@ -366,26 +423,26 @@ async function loadSites() {
       u.served += s.bytes_served; u.hours += s.awake_hours; u.cost += s.cost_hours;
     }
     const names = Object.keys(by).sort();
-    clear(sum).append(names.length ? table(["User", { label: "Sites", num: true }, { label: "Awake containers", num: true },
-      { label: "Storage", num: true }, { label: "Requests", num: true }, { label: "Served", num: true },
-      { label: "Awake h", num: true }, { label: "Cost h", num: true }],
+    clear(sum).append(names.length ? table([t("col.user"), { label: t("scol.sites"), num: true }, { label: t("scol.awakeContainers"), num: true },
+      { label: t("scol.storage"), num: true }, { label: t("scol.requests"), num: true }, { label: t("scol.served"), num: true },
+      { label: t("scol.awakeH"), num: true }, { label: t("col.cost"), num: true }],
       names.map(n => { const u = by[n]; return el("tr", {}, td(n), td(u.sites, "num"), td(u.awake, "num"),
         td(fmtBytes(u.bytes), "num"), td(u.requests, "num"), td(fmtBytes(u.served), "num"),
-        td(fmtH(u.hours, 2), "num"), td(fmtH(u.cost, 3), "num")); })) : el("p", { class: "muted" }, "No sites yet."));
+        td(fmtH(u.hours, 2), "num"), td(fmtH(u.cost, 3), "num")); })) : el("p", { class: "empty" }, t("sites.noneYet")));
     clear(box).append(sitesTable(sites));
-  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, errText(e))); }
 }
 
 // ----- Nodes -----
 let nodesTimer = null;
 
-function ago(t) {
-  if (!t) return "never";
-  const s = Math.max(0, (Date.now() - Date.parse(t + "Z")) / 1000);
-  if (s < 60) return Math.round(s) + "s ago";
-  if (s < 3600) return Math.round(s / 60) + "m ago";
-  if (s < 86400) return (s / 3600).toFixed(1) + "h ago";
-  return (s / 86400).toFixed(1) + "d ago";
+function ago(ts) {
+  if (!ts) return t("never");
+  const s = Math.max(0, (Date.now() - Date.parse(ts + "Z")) / 1000);
+  if (s < 60) return t("ago.s", { n: Math.round(s) });
+  if (s < 3600) return t("ago.m", { n: Math.round(s / 60) });
+  if (s < 86400) return t("ago.h", { n: (s / 3600).toFixed(1) });
+  return t("ago.d", { n: (s / 86400).toFixed(1) });
 }
 
 function meter(used, cap, unit, digits = 1) {
@@ -393,79 +450,89 @@ function meter(used, cap, unit, digits = 1) {
   const pct = cap > 0 ? Math.min(100, Math.max(0, used / cap * 100)) : 0;
   const cls = pct >= 90 ? "bad" : pct >= 70 ? "warn" : "";
   const f = v => Number(v).toFixed(digits).replace(/\.0+$/, "");
-  return el("div", { class: "meter-box", title: `${pct.toFixed(0)}% used` },
-    el("div", { class: "meter" }, el("div", { class: "fill " + cls, style: `width:${pct.toFixed(1)}%` })),
-    el("span", { class: "muted" }, `${f(used)} / ${f(cap)} ${unit}`));
+  return el("div", { class: "meter-box", title: t("node.pctUsed", { pct: pct.toFixed(0) }) },
+    el("div", { class: "meter " + cls }, el("div", { class: "fill " + cls, style: `width:${pct.toFixed(1)}%` })),
+    el("span", { class: "muted small" }, `${f(used)} / ${f(cap)} ${unit}`));
 }
 
 function nodeStatusBadge(n) {
-  const cls = { online: "s-succeeded", draining: "s-timeout", offline: "s-error" }[n.status] || "";
-  return el("span", { class: "badge " + cls }, n.status);
+  return el("span", { class: "badge s-" + n.status, title: n.status }, hasT("node." + n.status) ? t("node." + n.status) : n.status);
+}
+
+function nodeSourceTag(n) {
+  if (n.source !== "env" && n.source !== "admin") return null;
+  return el("span", { class: "tag" + (n.source === "admin" ? " accent" : ""), title: t("node.src." + n.source + "Tip") }, t("node.src." + n.source));
 }
 
 function nodeCard(n) {
   const busy = n.running_jobs.length;
   const mismatch = n.online && n.node_active_jobs != null && n.node_active_jobs !== busy;
-  const drainBtn = el("button", { class: "btn" + (n.draining ? " primary" : ""), onclick: async () => {
-    if (!n.draining && !confirm(`Drain ${n.name}? It gets no new jobs; its ${busy} running job(s) finish normally.`)) return;
+  const drainBtn = el("button", { class: "btn sm" + (n.draining ? " primary" : ""), onclick: async () => {
+    if (!n.draining && !confirm(t("node.confirmDrain", { name: n.name, n: busy }))) return;
     drainBtn.disabled = true;
     try { await api(`/admin/nodes/${encodeURIComponent(n.name)}/${n.draining ? "undrain" : "drain"}`, { method: "POST" }); }
-    catch (e) { showMsg($("nodes"), e.message); }
+    catch (e) { showMsg($("nodes"), errText(e)); }
     loadNodes({ probe: false });
-  } }, n.draining ? "Resume (accept jobs)" : "Drain");
+  } }, n.draining ? t("node.resume") : t("node.drain"));
   const d24 = n.last_24h;
   const kv = (k, v) => el("div", {}, el("div", { class: "k" }, k), el("div", {}, v));
   const lam = n.kind === "lambda" ? (n.lambda || {}) : null;
+  const gb = mb => (mb / 1024).toFixed(1);
+  const last24 = t("node.last24v", { jobs: d24.jobs, ok: d24.succeeded, failed: d24.failed, lost: d24.lost, cpuh: d24.cpu_hours.toFixed(2) });
+  const lastCheck = n.last_check ? t("node.lastCheckV", { time: fmtTime(n.last_check), ago: ago(n.last_check) }) : "–";
   return el("div", { class: "node-card" },
-    el("div", { class: "row", style: "align-items:center" },
-      el("h3", { style: "margin:0" }, n.name), nodeStatusBadge(n),
-      lam ? el("span", { class: "badge" }, "AWS Lambda") : null,
-      el("span", { class: "muted" }, n.url || ""),
-      el("span", { style: "margin-left:auto" }, drainBtn)),
+    el("div", { class: "node-head" },
+      el("h3", {}, n.name), nodeStatusBadge(n),
+      lam ? el("span", { class: "tag accent" }, "AWS Lambda") : null,
+      nodeSourceTag(n),
+      el("span", { class: "url" }, n.url || ""),
+      el("div", { class: "end" },
+        lam ? el("button", { class: "btn sm", onclick: () => openLambdaSettings(n.name) }, t("node.settings")) : null,
+        drainBtn)),
     !n.online ? el("p", { class: "s-error" },
-      `Unreachable${n.down_since ? " since " + fmtTime(n.down_since) + " UTC (" + ago(n.down_since) + ")" : ""}: ${n.error || "no answer"}`) : null,
-    el("div", { class: "stats", style: "margin:10px 0" },
+      n.down_since ? t("node.unreachableSince", { time: fmtTime(n.down_since), ago: ago(n.down_since), error: n.error || t("node.noAnswer") })
+        : t("node.unreachable", { error: n.error || t("node.noAnswer") })) : null,
+    el("div", { class: "stats", style: "margin:12px 0 4px" },
       ...(lam ? [
-        el("div", { class: "stat" }, el("div", { class: "k" }, "Concurrent jobs"),
-          n.slots ? meter(n.slots.used, n.slots.max, "slots") : meter(null)),
-        el("div", { class: "stat" }, el("div", { class: "k" }, "Per job"),
-          el("div", { class: "v", style: "font-size:15px" }, n.capacity ? `${n.capacity.cpus} vCPU · ${(n.capacity.mem_mb / 1024).toFixed(1)} GB` : "–")),
+        el("div", { class: "stat" }, el("div", { class: "k" }, t("node.concurrent")),
+          n.slots ? meter(n.slots.used, n.slots.max, t("node.slots")) : meter(null)),
+        el("div", { class: "stat" }, el("div", { class: "k" }, t("node.perJob")),
+          el("div", { class: "v", style: "font-size:15px" }, n.capacity ? `${n.capacity.cpus} vCPU · ${gb(n.capacity.mem_mb)} GB` : "–")),
       ] : [
-        el("div", { class: "stat" }, el("div", { class: "k" }, "CPU used"),
-          n.capacity ? meter(n.used.cpus, n.capacity.cpus, "cores") : meter(null)),
-        el("div", { class: "stat" }, el("div", { class: "k" }, "Memory used"),
+        el("div", { class: "stat" }, el("div", { class: "k" }, t("node.cpuUsed")),
+          n.capacity ? meter(n.used.cpus, n.capacity.cpus, t("node.cores")) : meter(null)),
+        el("div", { class: "stat" }, el("div", { class: "k" }, t("node.memUsed")),
           n.capacity ? meter(n.used.mem_mb / 1024, n.capacity.mem_mb / 1024, "GB") : meter(null)),
       ]),
-      el("div", { class: "stat" }, el("div", { class: "v" }, busy), el("div", { class: "k" }, "jobs here")),
+      el("div", { class: "stat" }, el("div", { class: "v" }, busy), el("div", { class: "k" }, t("node.jobsHere"))),
       el("div", { class: "stat" }, el("div", { class: "v" }, n.latency_ms == null ? "–" : Math.round(n.latency_ms) + " ms"),
-        el("div", { class: "k" }, "latency")),
+        el("div", { class: "k" }, t("node.latency"))),
       el("div", { class: "stat" }, el("div", { class: "v", style: "font-size:15px" }, ago(n.last_seen)),
-        el("div", { class: "k" }, "last seen"))),
-    mismatch ? el("p", { class: "s-timeout" }, `The node reports ${n.node_active_jobs} active job(s) but this server has ${busy} running there `
-      + "(a job may be starting or finishing, or a container was left behind).") : null,
+        el("div", { class: "k" }, t("node.lastSeen")))),
+    mismatch ? el("p", { class: "s-timeout" }, t("node.mismatch", { n: n.node_active_jobs, busy })) : null,
     lam ? el("div", { class: "kv" },
-      kv("Function", `${lam.function || "–"} (${lam.region || "default region"})`),
-      kv("Network", lam.network === "internet" ? "internet (network jobs only)" : "none (VPC without internet; jobs without network only)"),
-      kv("Longest job", lam.max_job_seconds ? `${lam.max_job_seconds} s (function timeout ${lam.timeout_seconds} s)` : "–"),
-      kv("Images", n.allowed_images ? n.allowed_images.join(", ") : "–"),
-      kv("Reserved by jobs here", `${n.reserved.cpus} cores · ${(n.reserved.mem_mb / 1024).toFixed(1)} GB`),
-      kv("Last 24 h", `${d24.jobs} job(s): ${d24.succeeded} ok, ${d24.failed} failed/stopped, ${d24.lost} lost · ${d24.cpu_hours.toFixed(2)} CPU-hours`),
-      kv("Last check", n.last_check ? `${fmtTime(n.last_check)} UTC (${ago(n.last_check)})` : "–")) :
+      lam.function ? kv(t("node.function"), `${lam.function} (${lam.region || t("node.defaultRegion")})`) : null,
+      lam.network ? kv(t("node.network"), lam.network === "internet" ? t("node.netInternet") : t("node.netNone")) : null,
+      kv(t("node.longest"), lam.max_job_seconds ? t("node.longestV", { s: lam.max_job_seconds, timeout: lam.timeout_seconds }) : "–"),
+      kv(t("node.images"), n.allowed_images ? n.allowed_images.join(", ") : "–"),
+      kv(t("node.reserved"), t("node.coresGb", { cpus: n.reserved.cpus, gb: gb(n.reserved.mem_mb) })),
+      kv(t("node.last24"), last24),
+      kv(t("node.lastCheck"), lastCheck)) :
     el("div", { class: "kv" },
-      kv("Free", n.free ? `${n.free.cpus} cores · ${(n.free.mem_mb / 1024).toFixed(1)} GB` : "–"),
-      kv("Reserved by jobs here", `${n.reserved.cpus} cores · ${(n.reserved.mem_mb / 1024).toFixed(1)} GB`),
-      kv("Last 24 h", `${d24.jobs} job(s): ${d24.succeeded} ok, ${d24.failed} failed/stopped, ${d24.lost} lost · ${d24.cpu_hours.toFixed(2)} CPU-hours`),
-      kv("Features", n.features ? (n.features.join(", ") || "none") : "–"),
-      kv("Images", n.allowed_images ? n.allowed_images.join(", ") : "–"),
-      kv("Network jobs", n.allow_network == null ? "–" : n.allow_network ? "allowed" : "refused"),
+      kv(t("node.free"), n.free ? t("node.coresGb", { cpus: n.free.cpus, gb: gb(n.free.mem_mb) }) : "–"),
+      kv(t("node.reserved"), t("node.coresGb", { cpus: n.reserved.cpus, gb: gb(n.reserved.mem_mb) })),
+      kv(t("node.last24"), last24),
+      kv(t("node.features"), n.features ? (n.features.join(", ") || t("none")) : "–"),
+      kv(t("node.images"), n.allowed_images ? n.allowed_images.join(", ") : "–"),
+      kv(t("node.netJobs"), n.allow_network == null ? "–" : n.allow_network ? t("node.allowed") : t("node.refused")),
       kv("Docker", n.docker_version || "–"),
-      kv("Last check", n.last_check ? `${fmtTime(n.last_check)} UTC (${ago(n.last_check)})` : "–")));
+      kv(t("node.lastCheck"), lastCheck)));
 }
 
 function nodeJobsTable(rows) {
-  if (!rows.length) return el("p", { class: "muted" }, "No jobs running on any node.");
-  return table(["Node", "Job", "User", "Status", "Image", { label: "CPU", num: true }, { label: "MB", num: true },
-    "Started", { label: "Running", num: true }, { label: "Timeout", num: true }],
+  if (!rows.length) return el("p", { class: "empty" }, t("nodes.noJobs"));
+  return table([t("col.node"), t("nj.job"), t("col.user"), t("col.status"), t("col.image"), { label: t("col.cpu"), num: true }, { label: t("col.mb"), num: true },
+    t("col.started"), { label: t("nj.running"), num: true }, { label: t("nj.timeout"), num: true }],
     rows.map(j => el("tr", {}, td(j.node), td(j.id), td(j.user || j.user_id), td(statusBadge(j.status)), td(j.image),
       td(j.cpus, "num"), td(j.mem_mb, "num"), td(fmtTime(j.started_at)), td(fmtDur(j.run_seconds), "num"),
       td(fmtDur(j.timeout_seconds), "num"))));
@@ -480,18 +547,20 @@ async function loadNodes({ probe = true } = {}) {
     const tot = (f, k) => on.reduce((a, n) => a + (n[f] ? n[f][k] : 0), 0);
     const jobs = ns.flatMap(n => n.running_jobs.map(j => ({ ...j, node: n.name })))
       .concat(r.local_running_jobs.map(j => ({ ...j, node: "local" })));
-    clear(sum).append(el("div", {}, el("div", { class: "stats", style: "margin-bottom:8px" },
-      el("div", { class: "stat" }, el("div", { class: "v" }, `${on.length} / ${ns.length}`), el("div", { class: "k" }, "nodes online")),
-      el("div", { class: "stat" }, el("div", { class: "v" }, `${+tot("free", "cpus").toFixed(2)} / ${+tot("capacity", "cpus").toFixed(2)}`), el("div", { class: "k" }, "free / total cores")),
-      el("div", { class: "stat" }, el("div", { class: "v" }, `${(tot("free", "mem_mb") / 1024).toFixed(1)} / ${(tot("capacity", "mem_mb") / 1024).toFixed(1)}`), el("div", { class: "k" }, "free / total GB")),
-      el("div", { class: "stat" }, el("div", { class: "v" }, jobs.length), el("div", { class: "k" }, "running jobs")),
-      el("div", { class: "stat" }, el("div", { class: "v" }, r.queued_jobs), el("div", { class: "k" }, "queued jobs"))),
-      r.local_execution ? el("p", { class: "muted" }, "Local execution on this host's Docker is on (used after the nodes).") : null,
-      !ns.length ? el("p", { class: "s-timeout" }, "No compute node is configured.") : null));
+    const stat = (v, k) => el("div", { class: "stat" }, el("div", { class: "v" }, v), el("div", { class: "k" }, k));
+    clear(sum).append(el("div", {}, el("div", { class: "stats" },
+      stat(`${on.length} / ${ns.length}`, t("nodes.online")),
+      stat(`${+tot("free", "cpus").toFixed(2)} / ${+tot("capacity", "cpus").toFixed(2)}`, t("nodes.cores")),
+      stat(`${(tot("free", "mem_mb") / 1024).toFixed(1)} / ${(tot("capacity", "mem_mb") / 1024).toFixed(1)}`, t("nodes.gb")),
+      stat(jobs.length, t("nodes.running")),
+      stat(r.queued_jobs, t("nodes.queued"))),
+      r.local_execution ? el("p", { class: "muted", style: "margin:12px 0 0" }, t("nodes.local")) : null,
+      !ns.length ? el("p", { class: "s-timeout", style: "margin:12px 0 0" }, t("nodes.none")) : null));
     clear(box).append(...ns.map(nodeCard));
     clear($("nodes-jobs")).append(nodeJobsTable(jobs));
-    $("nodes-checked").textContent = `checked ${fmtTime(r.checked_at)} UTC` + (r.heartbeat_seconds ? ` · background check every ${r.heartbeat_seconds}s` : "");
-  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+    $("nodes-checked").textContent = t("nodes.checked", { time: fmtTime(r.checked_at) })
+      + (r.heartbeat_seconds ? " · " + t("nodes.heartbeat", { s: r.heartbeat_seconds }) : "");
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, errText(e))); }
 }
 
 function nodesAuto(on) {
@@ -507,17 +576,17 @@ $("nodes-auto").addEventListener("change", () => nodesAuto(true));
 let caddyBase = null;   // { content, sha256 } the editor was opened on
 
 function caddySitesTable(sites) {
-  if (!sites || !sites.length) return el("p", { class: "muted" }, "No sites.");
-  return table(["Hosts", "Listen", "Upstreams", "Handlers"], sites.map(s => el("tr", {},
+  if (!sites || !sites.length) return el("p", { class: "empty" }, t("caddy.noSites"));
+  return table([t("caddy.hosts"), t("caddy.listen"), t("caddy.upstreams"), t("caddy.handlers")], sites.map(s => el("tr", {},
     td(el("span", {}, s.hosts.flatMap((h, i) => [i ? ", " : null, h,
       s.allowed_host && s.allowed_host[h] === false
-        ? el("span", { class: "s-timeout", title: "not in DOCKERSERVER_ALLOWED_HOSTS: OAuth / MCP connector sign-in will not answer on this host" }, " ⚠") : null])), "wrap"),
+        ? el("span", { class: "s-timeout", title: t("caddy.notAllowed") }, " ⚠") : null])), "wrap"),
     td(s.listen.join(", ")), td(s.upstreams.join(", ") || "–", "wrap"), td(s.handlers.join(", "), "wrap"))));
 }
 
 function caddyMarkDirty() {
   const dirty = caddyBase && $("caddy-editor").value !== caddyBase.content;
-  $("caddy-dirty").textContent = dirty ? "unsaved edits" : "";
+  $("caddy-dirty").textContent = dirty ? t("caddy.dirty") : "";
 }
 
 async function loadCaddy({ keepEdits = false } = {}) {
@@ -528,19 +597,19 @@ async function loadCaddy({ keepEdits = false } = {}) {
     const dirty = caddyBase && ed.value !== caddyBase.content;
     if (!keepEdits || !dirty) ed.value = c.content;
     caddyBase = { content: c.content, sha256: c.sha256 };
-    const sync = c.in_sync === true ? el("span", { class: "s-succeeded" }, "running config matches the file")
-      : c.in_sync === false ? el("span", { class: "s-timeout" }, "running config differs from the file")
+    const sync = c.in_sync === true ? el("span", { class: "s-succeeded" }, t("caddy.inSync"))
+      : c.in_sync === false ? el("span", { class: "s-timeout" }, t("caddy.outOfSync"))
       : el("span", { class: "muted" }, "–");
     clear(st).append(el("div", { class: "stats" },
-      el("div", { class: "stat" }, el("div", { class: "v" }, c.reachable ? "up" : "unreachable"), el("div", { class: "k" }, "admin API " + c.admin_url)),
+      el("div", { class: "stat" }, el("div", { class: "v" }, c.reachable ? t("caddy.up") : t("caddy.unreachable")), el("div", { class: "k" }, t("caddy.adminApi", { url: c.admin_url }))),
       el("div", { class: "stat" }, el("div", { class: "v", style: "font-size:15px" }, sync), el("div", { class: "k" }, c.path))),
-      ...(c.root && c.root.found ? [el("p", { class: "muted" }, `Caddy starts from ${c.root.path}, which imports this file`
-        + (c.root.other_imports.length ? ` and also ${c.root.other_imports.join(", ")} (kept as they are on every Apply).` : "."))] : []),
+      ...(c.root && c.root.found ? [el("p", { class: "muted" }, c.root.other_imports.length
+        ? t("caddy.rootOthers", { path: c.root.path, others: c.root.other_imports.join(", ") }) : t("caddy.root", { path: c.root.path }))] : []),
       ...(c.error ? [el("p", { class: "s-error" }, c.error)] : []));
     $("caddy-reload").classList.toggle("hidden", c.in_sync !== false);
     clear($("caddy-sites")).append(caddySitesTable(c.running_sites));
     caddyMarkDirty();
-  } catch (e) { clear(st).append(el("p", { class: "s-error" }, e.message)); }
+  } catch (e) { clear(st).append(el("p", { class: "s-error" }, errText(e))); }
   loadCaddyBackups();
 }
 
@@ -548,64 +617,66 @@ async function loadCaddyBackups() {
   const box = $("caddy-backups");
   try {
     const bs = await api("/admin/caddy/backups");
-    clear(box).append(bs.length ? table(["Saved (UTC)", "Replaced by", { label: "Size", num: true }, ""],
+    clear(box).append(bs.length ? table([t("caddy.saved"), t("caddy.replacedBy"), { label: t("scol.size"), num: true }, ""],
       bs.map(b => el("tr", {}, td(fmtTime(b.saved_at)), td(b.replaced_by), td(fmtBytes(b.bytes), "num"),
-        td(el("button", { class: "btn", onclick: async () => {
+        td(el("button", { class: "btn sm", onclick: async () => {
           try {
             $("caddy-editor").value = await api(`/admin/caddy/backups/${encodeURIComponent(b.name)}`, { raw: true });
             caddyMarkDirty();
-            showMsg($("caddy-result"), "Backup loaded into the editor. Review it, then Apply to roll back.", true);
+            showMsg($("caddy-result"), t("caddy.backupLoaded"), true);
             $("caddy-editor").scrollIntoView({ behavior: "smooth" });
-          } catch (e) { showMsg($("caddy-result"), e.message); }
-        } }, "Load into editor")))))
-      : el("p", { class: "muted" }, "No backups yet (one is made on every Apply)."));
-  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+          } catch (e) { showMsg($("caddy-result"), errText(e)); }
+        } }, t("caddy.loadBackup"))))))
+      : el("p", { class: "empty" }, t("caddy.noBackups")));
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, errText(e))); }
 }
 
 function caddyShowResult(r, okText) {
   const box = clear($("caddy-result"));
-  if (r.ok === false) { box.append(el("p", { class: "s-error" }, "Invalid:"), el("pre", { class: "logs" }, r.error)); return; }
+  if (r.ok === false) { box.append(el("p", { class: "s-error" }, t("caddy.invalid")), el("pre", { class: "logs" }, r.error)); return; }
   box.append(el("p", { class: "s-succeeded" }, okText));
   if (r.warnings && r.warnings.length)
     box.append(el("pre", { class: "logs" }, r.warnings.map(w => `${w.file || ""}:${w.line || ""} ${w.directive || ""} ${w.message || JSON.stringify(w)}`).join("\n")));
-  box.append(el("h3", {}, "Sites in this config"), caddySitesTable(r.sites));
+  box.append(el("h3", {}, t("caddy.sitesInConfig")), caddySitesTable(r.sites));
 }
 
 $("caddy-editor").addEventListener("input", caddyMarkDirty);
 $("caddy-editor").addEventListener("keydown", ev => {   // Tab inserts a tab (Caddyfile indentation)
   if (ev.key !== "Tab" || ev.shiftKey || ev.ctrlKey || ev.metaKey || ev.altKey) return;
   ev.preventDefault();
-  const t = ev.target, a = t.selectionStart;
-  t.setRangeText("\t", a, t.selectionEnd, "end");
+  const ta = ev.target, a = ta.selectionStart;
+  ta.setRangeText("\t", a, ta.selectionEnd, "end");
   caddyMarkDirty();
 });
 $("caddy-refresh").addEventListener("click", () => loadCaddy({ keepEdits: true }));
 $("caddy-revert").addEventListener("click", () => {
-  if (caddyBase && $("caddy-editor").value !== caddyBase.content && !confirm("Discard your edits?")) return;
+  if (caddyBase && $("caddy-editor").value !== caddyBase.content && !confirm(t("caddy.confirmDiscard"))) return;
   caddyBase = null; loadCaddy();
 });
 $("caddy-validate").addEventListener("click", async () => {
-  try { caddyShowResult(await api("/admin/caddy/validate", { method: "POST", body: { content: $("caddy-editor").value } }), "Valid."); }
-  catch (e) { showMsg($("caddy-result"), e.message); }
+  try { caddyShowResult(await api("/admin/caddy/validate", { method: "POST", body: { content: $("caddy-editor").value } }), t("caddy.valid")); }
+  catch (e) { showMsg($("caddy-result"), errText(e)); }
 });
 $("caddy-apply").addEventListener("click", async () => {
-  if (!confirm("Apply this Caddyfile? Caddy switches to it immediately for all sites.")) return;
+  if (!confirm(t("caddy.confirmApply"))) return;
   const btn = $("caddy-apply"); btn.disabled = true;
   try {
     const r = await api("/admin/caddy", { method: "PUT",
       body: { content: $("caddy-editor").value, base_sha256: caddyBase ? caddyBase.sha256 : null } });
-    caddyShowResult(r, "Applied and saved." + (r.backup ? ` Previous file kept as ${r.backup}.` : ""));
+    caddyShowResult(r, t("caddy.applied") + (r.backup ? " " + t("caddy.keptAs", { backup: r.backup }) : ""));
     caddyBase = null; await loadCaddy();
   } catch (e) {
-    clear($("caddy-result")).append(el("p", { class: "s-error" }, "Not applied:"), el("pre", { class: "logs" }, e.message));
+    clear($("caddy-result")).append(el("p", { class: "s-error" }, t("caddy.notApplied")), el("pre", { class: "logs" }, errText(e)));
   } finally { btn.disabled = false; }
 });
 $("caddy-reload").addEventListener("click", async () => {
-  if (!confirm("Load the Caddyfile on disk into Caddy as it is?")) return;
-  try { caddyShowResult(await api("/admin/caddy/reload", { method: "POST" }), "Loaded the file into Caddy."); loadCaddy({ keepEdits: true }); }
-  catch (e) { showMsg($("caddy-result"), e.message); }
+  if (!confirm(t("caddy.confirmReload"))) return;
+  try { caddyShowResult(await api("/admin/caddy/reload", { method: "POST" }), t("caddy.reloaded")); loadCaddy({ keepEdits: true }); }
+  catch (e) { showMsg($("caddy-result"), errText(e)); }
 });
 
+const ADMIN_TABS = ["users", "jobs", "nodes", "usage", "sites", "caddy", "settings"];
+const ADMIN_TAB_KEY = "fastcompute_admin_tab";   // sessionStorage: keeps the tab across a language switch
 function selectTab(name) { document.querySelector(`nav button[data-tab="${name}"]`).click(); }
 
 $("create-form").addEventListener("submit", async ev => {
@@ -617,17 +688,27 @@ $("create-form").addEventListener("submit", async ev => {
       name: f.get("name"), role: f.get("role"), max_cpus: +f.get("max_cpus"), max_mem_mb: +f.get("max_mem_mb"),
       max_run_seconds: +f.get("max_run_seconds"), max_concurrent_jobs: +f.get("max_concurrent_jobs"),
       allow_network: f.get("allow_network") === "true", max_sites: +f.get("max_sites") } });
-    out.append(el("p", {}, `Created ${u.name}. Token (shown once — copy it now):`), el("div", { class: "token" }, u.token));
+    out.append(el("p", {}, t("users.created", { name: u.name })), el("div", { class: "token" }, u.token));
     ev.target.reset(); loadUsers();
-  } catch (e) { showMsg(out, e.message); }
+  } catch (e) { showMsg(out, errText(e)); }
 });
 $("jobs-refresh").addEventListener("click", loadJobs);
 $("job-status").addEventListener("change", loadJobs);
 $("usage-form").addEventListener("submit", loadUsage);
 $("sites-refresh").addEventListener("click", loadSites);
 
-setupTabs(tab => { nodesAuto(tab === "nodes"); if (tab === "nodes") loadNodes(); if (tab === "jobs") loadJobs(); if (tab === "usage") loadUsage(); if (tab === "users") loadUsers(); if (tab === "sites") loadSites(); if (tab === "caddy") loadCaddy({ keepEdits: true }); });
-initLogin({ requireAdmin: true, onReady: () => loadUsers() });
+setupTabs(tab => {
+  try { sessionStorage.setItem(ADMIN_TAB_KEY, tab); } catch {}
+  nodesAuto(tab === "nodes"); if (tab === "nodes") loadNodes(); if (tab === "jobs") loadJobs(); if (tab === "usage") loadUsage();
+  if (tab === "users") loadUsers(); if (tab === "sites") loadSites(); if (tab === "caddy") loadCaddy({ keepEdits: true });
+  if (tab === "settings") loadSettings();
+});
+initLogin({ requireAdmin: true, onReady: () => {
+  loadUsers();
+  let saved = null;
+  try { saved = sessionStorage.getItem(ADMIN_TAB_KEY); } catch {}
+  if (saved && saved !== "users" && ADMIN_TABS.includes(saved)) selectTab(saved);
+} });
 </script>
 </body>
 </html>

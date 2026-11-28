@@ -1,6 +1,7 @@
 // Welcome / getting-started guide, shown on /welcome (no sign-in) and in the "Welcome" tab of /ui.
 // Every URL is built from location.origin, so the page is right on whichever host serves it.
-// Needs common.js (el, clear, api).
+// Needs common.js (el, clear, api); the language is the page-wide choice (common.js LANG, switched
+// with the page's language button), stored under the same key as on the homepage.
 
 const WELCOME_LANG_KEY = "fastcompute_lang";
 
@@ -137,6 +138,7 @@ const WELCOME_TEXT = {
 };
 
 function welcomeLang() {
+  if (typeof LANG !== "undefined") return LANG;
   try { const l = localStorage.getItem(WELCOME_LANG_KEY); if (l === "en" || l === "zh") return l; } catch {}
   return (navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en";
 }
@@ -159,16 +161,12 @@ async function renderWelcome(container, opts = {}) {
   const draw = (lang) => {
     const t = WELCOME_TEXT[lang];
     const base = location.origin, mcp = base + "/mcp";
-    const langBtn = (code, label) => el("button", { class: "btn" + (code === lang ? " primary" : ""), type: "button",
-      onclick: () => { try { localStorage.setItem(WELCOME_LANG_KEY, code); } catch {} draw(code); } }, label);
     const firstJob = JSON.stringify({ command: "python main.py",
       files: { "main.py": "import platform\nprint('hello from', platform.node())\nprint(sum(range(10**7)))" },
       cpus: 1, mem_mb: 256, wait: 30 }, null, 1).replace(/\n\s*/g, " ");
     clear(container).append(
       el("div", { class: "panel welcome" },
-        el("div", { class: "row", style: "justify-content:space-between;align-items:center" },
-          el("h2", { style: "margin:0" }, t.title),
-          el("div", { class: "row" }, langBtn("zh", "中文"), langBtn("en", "English"))),
+        el("h2", {}, t.title),
         el("p", {}, t.intro),
         opts.me ? el("p", { class: "muted" }, el("strong", {}, t.yourAccount + ": "), t.limitsLine(opts.me)) : null,
         opts.dashboardLink ? el("p", {}, el("a", { href: "/ui" }, t.signIn + " →")) : null),

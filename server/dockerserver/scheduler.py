@@ -17,6 +17,10 @@ Monitoring: a heartbeat thread probes every node's /v1/info every node_heartbeat
 the admin "Nodes" view knows when a node was last seen. An admin can mark a node "draining":
 it gets no new jobs, running jobs finish normally. The draining set is kept in
 <data_dir>/nodes.json so it survives a restart.
+
+Live changes (Lambda nodes managed in /admin-ui -> Settings, admin_settings.py): add_node /
+replace_node / remove_node assign a NEW list to self.nodes; the list other threads iterate is
+never mutated, and a running job keeps the backend it started on.
 """
 import json
 import logging
@@ -54,18 +58,55 @@ class NodePool:
             log.warning("cannot read %s: %s", self._state_file, e)
             return set()
 
+    def _save_draining(self, data: dict):
+        tmp = self._state_file.with_suffix(".tmp")
+        self._state_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data, indent=1) + "\n")
+        os.replace(tmp, self._state_file)
+
     def set_draining(self, name: str, draining: bool) -> bool:
         if not any(b.name == name for b in self.nodes):
             raise KeyError(name)
         with self._lock:
             (self.draining.add if draining else self.draining.discard)(name)
             data = {"draining": sorted(self.draining)}
-        tmp = self._state_file.with_suffix(".tmp")
-        self._state_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(data, indent=1) + "\n")
-        os.replace(tmp, self._state_file)
+        self._save_draining(data)
         log.warning("node %s %s", name, "draining (no new jobs)" if draining else "accepting jobs again")
         return draining
+
+    # ---- live changes (admin Settings) ----
+    def add_node(self, b: Backend):
+        with self._lock:
+            if any(x.name == b.name for x in self.nodes):
+                raise ValueError(f"a compute node named {b.name} exists")
+            self.nodes = [*self.nodes, b]
+        log.warning("node %s added (%s)", b.name, getattr(b, "url", "?"))
+
+    def replace_node(self, b: Backend):
+        """Swap in a new backend for the node of the same name (draining state is kept)."""
+        with self._lock:
+            if not any(x.name == b.name for x in self.nodes):
+                raise KeyError(b.name)
+            self.nodes = [b if x.name == b.name else x for x in self.nodes]
+        log.warning("node %s reconfigured (%s)", b.name, getattr(b, "url", "?"))
+
+    def remove_node(self, name: str) -> Backend:
+        with self._lock:
+            old = next((x for x in self.nodes if x.name == name), None)
+            if old is None:
+                raise KeyError(name)
+            self.nodes = [x for x in self.nodes if x.name != name]
+            self._pending.pop(name, None)
+            was_draining = name in self.draining
+            self.draining.discard(name)
+            data = {"draining": sorted(self.draining)}
+        if was_draining:
+            try:
+                self._save_draining(data)
+            except OSError as e:
+                log.warning("cannot write %s: %s", self._state_file, e)
+        log.warning("node %s removed", name)
+        return old
 
     # ---- monitoring ----
     def probe_all(self, timeout: float = 4.0):
@@ -82,6 +123,7 @@ class NodePool:
             pending = {k: list(v) for k, v in self._pending.items()}
         for b in self.nodes:
             h = b.health() if hasattr(b, "health") else {"name": b.name, "online": True}
+            h["source"] = getattr(b, "source", "env")
             h["draining"] = b.name in self.draining
             pc, pm = pending.get(b.name, (0, 0))
             h["pending"] = {"cpus": pc, "mem_mb": pm}
@@ -89,8 +131,9 @@ class NodePool:
         return out
 
     def start_heartbeat(self):
+        # also without nodes: an admin may add one later (Settings); probe_all() then has work
         interval = getattr(self.settings, "node_heartbeat", 0)
-        if not interval or interval <= 0 or not self.nodes or self._hb_thread is not None:
+        if not interval or interval <= 0 or self._hb_thread is not None:
             return
         self._hb_stop.clear()
 
@@ -197,8 +240,11 @@ class NodePool:
         return next((b for b in self.nodes if b.name == name), None)
 
 
-def make_backend(n, settings) -> Backend:
+def make_backend(n, settings, *, credentials=None, client_factory=None) -> Backend:
+    """credentials / client_factory: Lambda nodes only (see LambdaBackend)."""
     if getattr(n, "kind", "docker") == "lambda":
         from .lambda_backend import LambdaBackend
-        return LambdaBackend(n.name, poll_interval=settings.node_poll_interval, **n.options)
+        return LambdaBackend(n.name, poll_interval=settings.node_poll_interval,
+                             credentials=credentials, client_factory=client_factory,
+                             source=getattr(n, "source", "env"), **n.options)
     return RemoteNodeBackend(n.name, n.url, n.token, poll_interval=settings.node_poll_interval)

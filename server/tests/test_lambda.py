@@ -253,3 +253,54 @@ def test_handler_cleans_reused_environment(tmp_path, monkeypatch):
     h.handler({"fresh_sandbox": True}, None)
     assert stray.wait(5) is not None and stray.pid in killed and my_pid not in killed
     assert called == {"ok": True, "exit": 0}
+
+
+class NoListS3:
+    """S3 as the server's IAM user sees it without s3:ListBucket (deploy.sh before Settings):
+    reading a missing object is a 403 AccessDenied, not a 404."""
+
+    def __init__(self, s3):
+        self._s3, self.deny_all = s3, False
+
+    def __getattr__(self, name):
+        return getattr(self._s3, name)
+
+    def _denied(self):
+        from botocore.exceptions import ClientError
+        return ClientError({"Error": {"Code": "AccessDenied", "Message": "Access Denied"},
+                            "ResponseMetadata": {"HTTPStatusCode": 403}}, "GetObject")
+
+    def get_object(self, **kw):
+        if self.deny_all:
+            raise self._denied()
+        try:
+            return self._s3.get_object(**kw)
+        except self._s3.exceptions.NoSuchKey:
+            raise self._denied() from None
+
+
+def test_status_read_as_403_before_the_first_report_is_not_an_error(s3):
+    from dockerserver.backends import Handle
+    s3n = NoListS3(s3)
+    be = make_lambda(s3n, FakeLambda(), start_timeout=30)
+    now = time.time()
+    h = Handle(be, "ds1-403", be.name, extra={"invoked": now, "etag": None, "changed": now})
+    st = be._poll(h)                       # no status.json yet, read as 403: still starting
+    assert st is not None and not st.finished and st.node_status == "preparing"
+    assert h.unreachable_since is None
+    s3.put_object(Bucket=BUCKET, Key="fast-compute/jobs/ds1-403/status.json",
+                  Body=json.dumps({"status": "running"}).encode())
+    assert be._poll(h).node_status == "running" and "first_seen" in h.extra
+    s3n.deny_all = True                    # after the first report a 403 is a real error
+    assert be._poll(h) is None and h.unreachable_since is not None
+
+
+def test_recovered_job_that_never_reports_times_out(s3):
+    from dockerserver.backends import Handle
+    be = make_lambda(s3, FakeLambda(), start_timeout=30)
+    be.start_timeout = 0.3
+    h = Handle(be, "ds2-gone", be.name)    # as recover() builds it after a restart: no "invoked"
+    assert not be._poll(h).finished
+    time.sleep(0.4)
+    st = be._poll(h)
+    assert st.finished and "did not start the job within" in st.error

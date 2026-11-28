@@ -18,12 +18,12 @@ fast-compute 会在计算节点上用一个隔离的、用完即删的 Docker �
 | 镜像 | 目前只允许 `python:3.12-slim`。 |
 | 规格 | `cpus`（可以是小数，如 `0.5`）和 `mem_mb`。默认 **1 CPU、256 MB**。 |
 | 超时 | `timeout_seconds`，到时间任务被杀。默认等于你的最长运行时间。 |
-| 额度小时 | 计费单位：**1 个 CPU 核 + 256 MB 内存运行 1 小时**。 |
+| 算力时 | 计费单位：**1 个 CPU 核 + 256 MB 内存运行 1 小时**。 |
 
 ### 计费
 
 ```
-费用（额度小时）= 运行秒数 / 3600 × max(cpus, mem_mb / 256)
+费用（算力时）= 运行秒数 / 3600 × max(cpus, mem_mb / 256)
 ```
 
 按**申请的规格** × 实际经过时间计费，不按实际用量。
@@ -35,7 +35,7 @@ fast-compute 会在计算节点上用一个隔离的、用完即删的 Docker �
 | 1 CPU，1024 MB | 1 小时 | 4（内存是较大的那一维） |
 | 0.5 CPU，128 MB | 10 分钟 | 约 0.083 |
 
-- 新账号默认有 **1000 额度小时**（管理员可另行配置）。
+- 新账号默认有 **1000 算力时**（管理员可另行配置）。
 - 可用额度不够按申请规格运行 60 秒时，任务会被**拒绝（HTTP 402）**。
 - 运行**过程中**额度用完，任务会被停止，状态为 `out_of_credits`。
 - 每个任务在结束时扣一次费，金额显示在任务的 `cost_hours` 字段。
@@ -68,7 +68,7 @@ fast-compute 会在计算节点上用一个隔离的、用完即删的 Docker �
 | `timeout` | 到达超时被杀。 |
 | `stopped` | 你自己停止的。 |
 | `out_of_credits` | 额度用完（或不够启动）。 |
-| `killed_by_admin` | 你的账号被管理员暂停。 |
+| `killed_by_admin` | 你的账号被管理员封禁，正在运行的任务被终止。 |
 | `lost` | 计算节点失联，按最后一次联系上的时间计费。 |
 | `error` | 看 `error` 字段（例如 git 地址错误、克隆失败）。 |
 
@@ -103,7 +103,7 @@ claude mcp add --transport http dockerserver https://compute.llmfreedomforge.com
 *Add custom connector* → URL 填 `https://compute.llmfreedomforge.com/mcp`（OAuth 客户端 ID/密钥留空）
 → *Connect*。会打开一个 fast-compute 页面：粘贴你的 `ds_…` 令牌，点 **Approve**。应用拿到的是
 它自己的令牌（有效期 1 小时，自动续期），不会拿到你的 `ds_` 令牌。吊销你的 `ds_` 令牌或账号被
-禁用后，连接器随即失效。
+停用后，连接器随即失效。
 
 ### 任务工具（`/mcp`）——只作用于你自己的任务
 
@@ -191,7 +191,7 @@ print(requests.get(f"{DS}/jobs/{job['id']}/logs", headers=H).text)
 把变量（API 密钥、配置等）保存一次，之后你运行的每个任务都会自动带上；单个任务的 `env` 会覆盖同名变量
 （只对该任务生效）。
 
-- **在哪里设置：** `/ui` 页面的 *Environment variables* 区域；MCP 工具 `list_env` / `set_env` /
+- **在哪里设置：** `/ui` 页面的 **环境变量** 区域；MCP 工具 `list_env` / `set_env` /
   `delete_env`；或 REST：`GET /me/env`（默认遮盖，`?reveal=true` 显示值）、
   `PUT /me/env/{NAME}`（body `{"value": "..."}`）、`DELETE /me/env/{NAME}`。
 - **单个任务：** MCP 用 `submit_job(..., env={"NAME": "value"})`，REST 用表单字段
@@ -258,14 +258,18 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" $DS/me/sites/gun-fu/publish
 
 ## 6. 网页
 
-https://compute.llmfreedomforge.com/ui ：粘贴令牌后可以看到余额、限额、你的任务（点开可看日志、
-停止任务）和每日用量。令牌只保存在当前浏览器标签页里。
+https://compute.llmfreedomforge.com/ui ：用令牌登录（令牌只保存在当前浏览器标签页里）。**欢迎** 页介绍如何连接和
+使用 fast-compute；**控制台** 显示余额、当前可用的算力时、已运行的任务数和已消耗的算力时、你的限额、你的任务
+（点开可看详情和日志，也可以停止任务）、环境变量、你的网站，以及每日用量（表格上方是近 30 天的柱状图）。
+
+页面支持中文和英文：点登录框上或顶部栏的 **中文 / EN** 按钮即可切换。这个选择保存在浏览器里，与产品主页共用；
+第一次打开时跟随浏览器语言。
 
 ## 7. 常见问题
 
 | 现象 | 原因 / 解决 |
 |---|---|
-| **401** | 令牌缺失、错误或已吊销，或账号被禁用。找管理员。 |
+| **401** | 令牌缺失、错误或已吊销，或账号已被停用。请联系管理员。 |
 | **402** 额度不足 | 余额不够按这个规格运行 60 秒。减小规格或请管理员充值。 |
 | **400** "exceeds your limit" | 降低 `cpus` / `mem_mb` / `timeout_seconds`，或请管理员提高限额。 |
 | **400** "larger than any compute node" | 没有节点能容纳这个规格，请减小。 |

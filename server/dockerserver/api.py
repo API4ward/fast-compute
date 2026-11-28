@@ -1,6 +1,7 @@
 """FastAPI application: admin + job endpoints, bearer-token auth."""
 import hashlib
 import json
+import re
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Session
 from starlette.routing import Route
 
 from . import __version__
+from .admin_settings import AdminSettings, SettingsStore
 from .config import Settings, load_settings
 from .billing import grant_missing_initial
 from .models import Site, Token, User, make_session_factory
@@ -70,8 +72,16 @@ _SITE_RESP_HEADERS = ("content-type", "etag", "last-modified", "cache-control", 
 # ---------- app factory ----------
 def create_app(settings: Settings | None = None, runner: JobRunner | None = None,
                recover: bool = True, enable_mcp: bool = True, pool=None,
-               site_runtime=None, caddy_transport=None) -> FastAPI:
+               site_runtime=None, caddy_transport=None, aws_client_factory=None) -> FastAPI:
+    """aws_client_factory (tests): callable(service, region) -> boto3-like client, used by the
+    Lambda nodes from Settings and by the Lambda diagnostics instead of real AWS clients."""
     settings = settings or load_settings()
+    if not settings.secret_key:   # tests that build Settings directly; load_settings() sets one
+        from cryptography.fernet import Fernet
+        settings.secret_key = Fernet.generate_key().decode()
+    # Admin settings (settings.json) before the job runner: its Lambda nodes join the pool
+    # (admin_cfg.attach() below) before runner.recover() looks for jobs that ran on them.
+    store = SettingsStore(settings.data_dir / "settings.json", settings.secret_key)
     Session_ = make_session_factory(settings.db_url)
     runner = runner or JobRunner(settings, Session_, pool=pool)
     svc = Services(settings, Session_, runner)
@@ -79,7 +89,11 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     caddy = CaddyManager(settings.caddyfile, settings.caddy_admin, settings.data_dir / "caddy" / "backups",
                          enabled=settings.caddy_manage, transport=caddy_transport,
                          root=settings.caddy_root)
-    sales = SalesAgent(settings)
+    sales = SalesAgent(settings, store=store)
+    admin_cfg = AdminSettings(settings, store, runner, Session_, sales=sales,
+                              client_factory=aws_client_factory)
+    admin_cfg.attach()
+    svc.admin_settings = admin_cfg
     site_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=3.0), trust_env=False)
     with Session_() as db:
         grant_missing_initial(db, settings.default_credit_hours)
@@ -117,6 +131,7 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     app.state.services = svc
     app.state.caddy = caddy
     app.state.sales = sales
+    app.state.admin_settings = admin_cfg
     if settings.oauth_enabled:
         from .oauth import DSOAuthProvider, HostCheck, build_oauth_routes
         svc.oauth = DSOAuthProvider(svc)
@@ -172,9 +187,15 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     def render_page(name: str) -> HTMLResponse:
         # Asset URLs carry a content hash so browsers / Cloudflare never serve a stale copy.
         html = (static_dir / name).read_text()
-        for asset in ("common.js", "common.css", "welcome.js", "home.css", "home.js"):
-            digest = hashlib.sha256((static_dir / asset).read_bytes()).hexdigest()[:12]
-            html = html.replace(f"/static/{asset}\"", f"/static/{asset}?v={digest}\"")
+
+        def versioned(m: re.Match) -> str:
+            asset = static_dir / m.group(1)
+            if not asset.is_file():
+                return m.group(0)
+            digest = hashlib.sha256(asset.read_bytes()).hexdigest()[:12]
+            return f'"/static/{m.group(1)}?v={digest}"'
+        # every "/static/<file>" the page references (css, js) gets ?v=<content hash>
+        html = re.sub(r'"/static/([A-Za-z0-9_.-]+\.(?:js|css))"', versioned, html)
         return HTMLResponse(html, headers=page_headers)
     page_headers = {
         "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; "
@@ -404,6 +425,85 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     @app.post("/admin/nodes/{name}/undrain")
     def undrain_node(name: str, admin: Admin):
         return svc.set_node_draining(admin, name, False)
+
+    # ----- admin: Settings (AWS account, Lambda nodes, homepage advisor; admin_settings.py) -----
+    async def json_object(request: Request) -> dict:
+        try:
+            data = await request.json()
+        except ValueError:
+            raise ServiceError(400, "invalid JSON")
+        if not isinstance(data, dict):
+            raise ServiceError(400, "the body must be a JSON object")
+        return data
+
+    @app.get("/admin/settings")
+    def get_admin_settings(_: Admin):
+        """AWS credentials in effect (secrets never shown), Lambda nodes, advisor settings."""
+        return admin_cfg.overview()
+
+    @app.put("/admin/settings/aws")
+    async def put_aws_settings(request: Request, admin: Admin):
+        data = await json_object(request)
+        return await anyio.to_thread.run_sync(admin_cfg.set_aws, admin.name, data)
+
+    @app.delete("/admin/settings/aws")
+    def delete_aws_settings(admin: Admin):
+        return admin_cfg.delete_aws(admin.name)
+
+    @app.post("/admin/settings/aws/check")
+    def check_aws_settings(_: Admin):
+        return admin_cfg.check_aws()
+
+    @app.post("/admin/settings/lambda/nodes", status_code=201)
+    async def add_lambda_node(request: Request, admin: Admin):
+        data = await json_object(request)
+        return await anyio.to_thread.run_sync(admin_cfg.add_node, admin.name, data)
+
+    @app.put("/admin/settings/lambda/nodes/{name}")
+    async def update_lambda_node(name: str, request: Request, admin: Admin):
+        data = await json_object(request)
+        return await anyio.to_thread.run_sync(admin_cfg.update_node, admin.name, name, data)
+
+    @app.delete("/admin/settings/lambda/nodes/{name}", status_code=204)
+    def delete_lambda_node(name: str, admin: Admin):
+        admin_cfg.delete_node(admin.name, name)
+
+    @app.post("/admin/settings/lambda/validate")
+    async def validate_lambda_node(request: Request, _: Admin):
+        """Diagnostics of an unsaved node configuration."""
+        data = await json_object(request)
+        return await anyio.to_thread.run_sync(admin_cfg.validate_config, data)
+
+    @app.post("/admin/settings/lambda/nodes/{name}/diagnose")
+    def diagnose_lambda_node(name: str, _: Admin):
+        return admin_cfg.diagnose(name)
+
+    @app.post("/admin/settings/lambda/nodes/{name}/test-job", status_code=202)
+    def lambda_test_job(name: str, admin: Admin):
+        """Run the fixed diagnostic command on the node (not billed); poll /lambda/tests/{id}."""
+        return admin_cfg.start_test_job(admin.name, name)
+
+    @app.get("/admin/settings/lambda/tests/{test_id}")
+    def lambda_test_state(test_id: str, _: Admin):
+        return admin_cfg.test_job(test_id)
+
+    @app.get("/admin/settings/lambda/nodes/{name}/logs")
+    def lambda_function_logs(name: str, _: Admin, minutes: int = 60):
+        """The function's CloudWatch log events of the last `minutes` (max 1440)."""
+        return admin_cfg.function_logs(name, minutes)
+
+    @app.put("/admin/settings/advisor")
+    async def put_advisor_settings(request: Request, admin: Admin):
+        data = await json_object(request)
+        return await anyio.to_thread.run_sync(admin_cfg.set_advisor, admin.name, data)
+
+    @app.delete("/admin/settings/advisor")
+    def delete_advisor_settings(admin: Admin):
+        return admin_cfg.delete_advisor(admin.name)
+
+    @app.post("/admin/settings/advisor/test")
+    async def test_advisor_settings(request: Request, _: Admin):
+        return await admin_cfg.test_advisor(await json_object(request))
 
     # ----- admin -----
     @app.get("/admin/leads")

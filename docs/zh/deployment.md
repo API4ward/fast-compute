@@ -43,7 +43,7 @@ sudo sh deploy/install-service.sh             # systemd 服务（只有 unit 文
 
 | 配置项 | 默认值 | |
 |---|---|---|
-| `DOCKERSERVER_DATA_DIR` | `data`（相对 `server/`） | SQLite 数据库和任务日志 |
+| `DOCKERSERVER_DATA_DIR` | `data`（相对 `server/`） | SQLite 数据库、任务日志、管理后台的设置（`settings.json`） |
 | `DOCKERSERVER_ALLOWED_IMAGES` / `DEFAULT_IMAGE` | `python:3.12-slim` | 镜像白名单 / 默认镜像 |
 | `DOCKERSERVER_MAX_UPLOAD_BYTES` | 50 MB | 上传 / 工作目录大小上限 |
 | `DOCKERSERVER_DEFAULT_CREDIT_HOURS` | 1000 | 新用户初始额度 |
@@ -56,15 +56,16 @@ sudo sh deploy/install-service.sh             # systemd 服务（只有 unit 文
 | `DOCKERSERVER_OAUTH` | `true` | 为 MCP 自定义连接器（claude.ai / Desktop）启用 OAuth |
 | `DOCKERSERVER_OAUTH_REDIRECT_HOSTS` | `claude.ai,claude.com` | 客户端注册时允许的 https 回调域名（另外允许 `http://localhost`） |
 | `DOCKERSERVER_OAUTH_ACCESS_TTL` / `_REFRESH_TTL` | 3600 / 2592000 | OAuth 令牌有效期（秒） |
-| `DOCKERSERVER_SECRET_KEY` | 首次启动时生成 | 加密用户环境变量的 Fernet 密钥，缺失时自动写入 `.env`。**请随 `.env` 一起备份；丢失后已保存的变量无法解密**（用户需要重新设置）。 |
+| `DOCKERSERVER_SECRET_KEY` | 首次启动时生成 | Fernet 密钥，用于加密用户的环境变量，以及在 `/admin-ui` → 设置 中保存的密钥（`data/settings.json` 中的 AWS 秘密访问密钥、产品顾问 API 密钥），缺失时自动写入 `.env`。**请随 `.env` 一起备份；丢失后这些内容都无法解密**（用户要重新设置变量，管理员要重新填写密钥）。 |
 | `DOCKERSERVER_NODES` | — | 计算节点（见下） |
 | `DOCKERSERVER_LOCAL_EXECUTION` | 自动 | 是否也用本机 Docker（默认：没有可用节点时才用） |
 | `DOCKERSERVER_NODE_LOST_GRACE` | 120 | 节点失联多少秒后任务标记为 `lost` |
 | `DOCKERSERVER_QUEUE_RETRY` / `_QUEUE_TIMEOUT` | 5 / 3600 | 排队重试间隔 / 最长等待 |
 | `DOCKERSERVER_NODE_INFO_TTL` / `_NODE_POLL_INTERVAL` | 5 / 2 | 容量缓存 / 状态轮询（秒） |
-| `DOCKERSERVER_NODE_HEARTBEAT` | 30 | 管理后台 Nodes 页的节点健康探测间隔（秒，0 = 关闭） |
+| `DOCKERSERVER_NODE_HEARTBEAT` | 30 | 管理后台“节点”页的节点健康探测间隔（秒，0 = 关闭） |
 
-修改后执行：`sudo systemctl restart dockerserver`。
+修改后执行：`sudo systemctl restart dockerserver`。管理员在 `/admin-ui` → **设置** 中保存的内容（AWS 凭证、
+Lambda 节点、首页产品顾问）无需重启即可生效，保存在 `server/data/settings.json`（权限 600）中。
 
 ### 静态站点
 
@@ -104,13 +105,17 @@ JSON 外面要保留单引号。令牌变量为空的节点会被跳过（日志
 
 #### AWS Lambda 节点
 
-`"type": "lambda"` 的节点条目把任务发给 AWS Lambda 函数（每个任务一次调用），而不是节点 agent：
-`{"name":"aws-lambda","type":"lambda","function":"fast-compute-job","bucket":"…","region":"eu-west-2","max_concurrency":10,"network":"none"}`。
-AWS 凭证写在 `server/.env` 的 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`（或用 `"profile"`），服务端需要
-`boto3`（已在 `requirements.txt`）。只有 Docker 节点都没有空位时才会把任务派给 Lambda；任务必须放得进一次调用
-（函数内存，每 1769 MB 对应 1 个 vCPU），超时不超过函数超时 − 30 秒（最多 870 秒），镜像为 `python:3.12-slim`，
-网络设置要与函数一致（`none` = 无公网的隔离 VPC，`internet` = 有公网）。部署脚本、设计与限制见
-[`lambda-node/README.md`](../../lambda-node/README.md)。
+Lambda 节点把任务发给 AWS Lambda 函数（每个任务一次调用），而不是节点 agent。`lambda-node/deploy.sh`
+会创建函数、存储桶、相关角色以及供服务器使用的 IAM 用户（加上 `LOGS=1` 时函数还能写 CloudWatch 日志）。
+最方便的接入方式是 `/admin-ui` → **设置**：保存 AWS 访问密钥、添加节点，再运行诊断和测试任务；节点立即开始
+接收任务，无需重启（见[管理员指南](admin-guide.md#设置)）。也可以写在 `server/.env` 里：在 `DOCKERSERVER_NODES`
+中加一条 `"type": "lambda"` 的条目（在设置页中只读显示），例如
+`{"name":"aws-lambda","type":"lambda","function":"fast-compute-job","bucket":"…","region":"eu-west-2","max_concurrency":10,"network":"none"}`，
+并配置 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`（或用 `"profile"`）。设置页中保存的密钥优先于 `AWS_*`
+变量，节点自己的 `profile` 又优先于两者。服务端需要 `boto3`（已在 `requirements.txt`）。只有 Docker 计算节点都
+没有空位时才会把任务派给 Lambda（本机 Docker 若也运行任务，则排在所有节点之后，包括 Lambda）；任务必须放得进一次调用（函数内存，每 1769 MB 对应 1 个 vCPU），超时不超过函数超时
+− 30 秒（最多 870 秒），镜像为 `python:3.12-slim`，网络设置要与函数一致（`none` = 无公网的隔离 VPC，
+`internet` = 有公网）。部署脚本、设计、限制和排错见 [`lambda-node/README.md`](../../lambda-node/README.md)。
 
 ### MCP 连接器的 OAuth
 
@@ -119,8 +124,8 @@ claude.ai 和 Claude Desktop 的自定义连接器不支持自定义 header，�
 `/.well-known/oauth-authorization-server`、`/register`（动态注册，回调地址限制在 `OAUTH_REDIRECT_HOSTS`）、
 `/authorize`（PKCE S256）→ `/oauth/consent`（用户粘贴 `ds_` 令牌，有 CSRF 防护和限流）、`/token`、`/revoke`。
 `/mcp` 返回 401 时带 `WWW-Authenticate: Bearer resource_metadata=…`。OAuth 令牌（`dsa_` 访问令牌 1 小时，
-`dsr_` 刷新令牌 30 天，每次刷新轮换）只存哈希，绑定用户、批准时用的 `ds_` 令牌、客户端和资源；用户被禁用/
-暂停或该 `ds_` 令牌被吊销时随即失效。OAuth 令牌只能用于签发它的 MCP 地址，不能用于 REST API。
+`dsr_` 刷新令牌 30 天，每次刷新轮换）只存哈希，绑定用户、批准时用的 `ds_` 令牌、客户端和资源；用户被停用/
+封禁或该 `ds_` 令牌被吊销时随即失效。OAuth 令牌只能用于签发它的 MCP 地址，不能用于 REST API。
 `Bearer ds_…` 方式不受影响。
 
 带环境变量的任务只会派给 `/v1/info` 中声明了 `"features": ["env"]` 的节点（支持环境变量的新版 agent）；
@@ -159,7 +164,7 @@ cd node
   `import <路径>/deploy/Caddyfile`；由 `sudo sh deploy/install-caddy.sh` 设置（需要时从官方 apt 源
   安装 Caddy，并把 `caddy` 用户加入属主所在组以便读取）。
 - 在 `/admin-ui` → **Caddy** 里编辑（检查、应用、备份；通过 Caddy 本机管理接口 `127.0.0.1:2019`，无需 sudo）。
-  手工修改文件后，用 `sudo systemctl reload caddy` 或管理页面的 **Load file into Caddy** 生效。
+  手工修改文件后，用 `sudo systemctl reload caddy` 或管理页面的 **把文件加载到 Caddy** 生效。
   配置项：`DOCKERSERVER_CADDYFILE`（默认 `deploy/Caddyfile`）、`DOCKERSERVER_CADDY_ADMIN`
   （默认 `http://127.0.0.1:2019`，只能是本机地址）、`DOCKERSERVER_CADDY_MANAGE=false` 关闭此功能。
   在页面上做的修改会让 git 工作区里的 `deploy/Caddyfile` 变为已修改，`git pull` 前请先提交（或 `git stash`）。
@@ -185,4 +190,5 @@ cd node
 | 测试 | `cd server && .venv/bin/python -m pytest -q`（没有 Docker 权限时跳过 Docker 测试） |
 
 网关重启时，会结束之前仍处于活动状态的任务（在节点上杀掉并标记为 `error`），并补扣所有未扣的
-费用。SQLite 数据库是 `server/data/dockerserver.db`，请定期备份。
+费用。请定期备份 `server/data/`（SQLite 数据库 `dockerserver.db`、`settings.json` 等），并同时备份
+`server/.env`：其中的 `DOCKERSERVER_SECRET_KEY` 用于解密保存的密钥。
