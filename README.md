@@ -7,6 +7,7 @@ isolated Docker container, with credit billing and CPU / memory usage accounting
 |---|---|---|
 | [`server/`](server/) | DockerServer: users and tokens, credits and billing, MCP (`/mcp`, `/mcp-admin`), admin and user web pages, scheduler that runs jobs locally or dispatches them to compute nodes | the bridge (aws-london) |
 | [`node/`](node/) | Compute node agent: a small HTTP API the server calls over the tailnet; runs each job in a locked-down container and reports usage | compute machines (e.g. mini) |
+| [`lambda-node/`](lambda-node/) | AWS Lambda compute node: function image + handler (one invocation = one job) and `deploy.sh` that sets it up in AWS; the server talks to it through S3 and Lambda | AWS Lambda |
 
 The two parts talk only over HTTP (see the API table in `node/README.md`), so each has its own
 `requirements.txt` and virtualenv and is deployed independently: on the bridge use `server/`, on a

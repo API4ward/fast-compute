@@ -92,6 +92,11 @@ class Backend:
         """{"capacity": {"cpus", "mem_mb"}, "free": {...}} or None if unknown/unreachable."""
         return None
 
+    def rejects(self, image: str | None, timeout_seconds: int | None,
+                network: bool | None) -> str | None:
+        """Reason this backend can never run such a job, else None (None args: unknown)."""
+        return None
+
 
 # =====================================================================================
 class LocalDockerBackend(Backend):
@@ -256,6 +261,7 @@ def node_workspace(payload: bytes) -> bytes:
 
 class RemoteNodeBackend(Backend):
     """Talks to one compute node agent over HTTP (tailnet), Bearer-token authenticated."""
+    kind = "docker"
 
     def __init__(self, name: str, url: str, token: str, *, poll_interval: float = 2.0,
                  connect_timeout: float = 5.0, read_timeout: float = 30.0, retries: int = 3,
@@ -339,7 +345,7 @@ class RemoteNodeBackend(Backend):
 
     def health(self) -> dict:
         """Monitoring snapshot from the last contact (no network)."""
-        return {"name": self.name, "url": self.url, "online": self._info is not None,
+        return {"name": self.name, "url": self.url, "kind": self.kind, "online": self._info is not None,
                 "info": self._info, "last_ok": self.last_ok, "last_check": self.last_check,
                 "last_error": self.last_error, "down_since": self.down_since,
                 "latency_ms": self.latency_ms}

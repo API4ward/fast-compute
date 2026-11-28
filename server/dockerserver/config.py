@@ -46,11 +46,24 @@ class NodeConfig:
     name: str
     url: str
     token: str = field(repr=False)
+    kind: str = "docker"                 # "docker" (computenode agent) or "lambda"
+    options: dict = field(default_factory=dict)   # kind-specific settings (no secrets)
+
+
+LAMBDA_KEYS = {"function", "bucket", "region", "prefix", "images", "max_concurrency", "network",
+               "profile", "start_timeout", "stale_after", "fresh_sandbox", "s3_endpoint_url",
+               "lambda_endpoint_url"}
 
 
 def parse_nodes(raw: str | None) -> list[NodeConfig]:
-    """DOCKERSERVER_NODES = JSON list of {name, url, token_env}; the token is read from the
-    environment variable named by token_env. Nodes without a token are skipped (warned)."""
+    """DOCKERSERVER_NODES = JSON list of nodes.
+
+    Docker node (computenode agent): {name, url, token_env}; the token is read from the
+    environment variable named by token_env. Nodes without a token are skipped (warned).
+
+    AWS Lambda node: {"name", "type": "lambda", "function", "bucket", "region", ...} (see
+    lambda_backend.py for the optional keys). AWS credentials come from the standard boto3
+    chain, e.g. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in server/.env, or "profile"."""
     if not raw or not raw.strip():
         return []
     try:
@@ -59,6 +72,21 @@ def parse_nodes(raw: str | None) -> list[NodeConfig]:
         raise SystemExit(f"DOCKERSERVER_NODES is not valid JSON: {e}")
     nodes = []
     for it in items:
+        if it.get("type", "docker") == "lambda":
+            name = it.get("name")
+            if not (name and it.get("function") and it.get("bucket")):
+                raise SystemExit(f"lambda node needs name, function and bucket: {it!r}")
+            unknown = set(it) - LAMBDA_KEYS - {"name", "type"}
+            if unknown:
+                raise SystemExit(f"lambda node {name}: unknown keys {sorted(unknown)}")
+            if it.get("network", "none") not in ("none", "internet"):
+                raise SystemExit(f"lambda node {name}: network must be \"none\" or \"internet\"")
+            opts = {k: v for k, v in it.items() if k in LAMBDA_KEYS}
+            nodes.append(NodeConfig(name, f"lambda://{it.get('region') or 'default'}/{it['function']}",
+                                    "", kind="lambda", options=opts))
+            continue
+        if it.get("type", "docker") != "docker":
+            raise SystemExit(f"DOCKERSERVER_NODES: unknown node type {it.get('type')!r}")
         name, url, token_env = it.get("name"), it.get("url"), it.get("token_env")
         if not (name and url and token_env):
             raise SystemExit(f"DOCKERSERVER_NODES entry needs name, url and token_env: {it!r}")
