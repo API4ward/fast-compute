@@ -106,6 +106,18 @@ Scheduling: most free CPUs (then memory) first among nodes that fit; HTTP 409 �
 fits → `queued` and retried; larger than every node → rejected at submit. Billing uses the
 node-measured run time; jobs are deleted on the node after billing.
 
+#### AWS Lambda node
+
+A node entry with `"type": "lambda"` sends jobs to an AWS Lambda function (one invocation per
+job) instead of a node agent: `{"name":"aws-lambda","type":"lambda","function":"fast-compute-job",
+"bucket":"…","region":"eu-west-2","max_concurrency":10,"network":"none"}`. AWS credentials go in
+`server/.env` as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (or `"profile"`), and the server
+needs `boto3` (in `requirements.txt`). Lambda nodes get jobs only when no Docker node has room;
+a job must fit one invocation (function memory, 1 vCPU per 1769 MB), its timeout must be at most
+the function timeout − 30 s (≤ 870 s), its image `python:3.12-slim`, and its network flag must
+match the function (`none` = isolated VPC, `internet`). Set-up script, design and limits:
+[`lambda-node/README.md`](../../lambda-node/README.md).
+
 ### OAuth for MCP connectors
 
 claude.ai and Claude Desktop custom connectors authenticate with MCP OAuth 2.1 instead of a header.

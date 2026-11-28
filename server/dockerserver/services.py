@@ -470,7 +470,11 @@ class Services:
             mine = [job_row(j) for j in running if j.node == name]
             info = h.get("info") or None
             nodes.append({
-                "name": name, "url": h.get("url"), "online": h["online"], "draining": h["draining"],
+                "name": name, "url": h.get("url"), "kind": h.get("kind", "docker"),
+                "slots": info.get("slots") if info else None,
+                "lambda": ({k: info.get(k) for k in ("function", "region", "network", "timeout_seconds",
+                                                     "max_job_seconds", "in_vpc", "architectures")}
+                           if info and info.get("kind") == "lambda" else None), "online": h["online"], "draining": h["draining"],
                 "status": ("offline" if not h["online"] else "draining" if h["draining"] else "online"),
                 "last_seen": iso(h.get("last_ok")), "last_check": iso(h.get("last_check")),
                 "down_since": iso(h.get("down_since")), "error": h.get("last_error"),
@@ -553,7 +557,8 @@ class Services:
             job_env = self.env.merged(db, user.id, env)   # user-global, overridden per job
         except EnvError as e:
             raise ServiceError(400, str(e))
-        never = getattr(self.runner, "never_fits", lambda c, m, e=False: None)(cpus, mem_mb, bool(job_env))
+        never = getattr(self.runner, "never_fits", lambda c, m, e=False, **kw: None)(
+            cpus, mem_mb, bool(job_env), image=image, timeout_seconds=timeout_seconds, network=network)
         if never:
             raise ServiceError(400, never)
         need = cost_uh(cpus, mem_mb, s.min_start_seconds)

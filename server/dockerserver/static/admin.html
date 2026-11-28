@@ -83,7 +83,9 @@
         <div id="nodes-summary"></div>
         <p class="muted">Capacity, used and free are what each node reports on <code>/v1/info</code>; "jobs here"
           are the jobs this server has running on it. A <b>draining</b> node gets no new jobs and its running
-          jobs finish normally. Nodes are configured in <code>server/.env</code> (<code>DOCKERSERVER_NODES</code>).</p>
+          jobs finish normally. Nodes are configured in <code>server/.env</code> (<code>DOCKERSERVER_NODES</code>).
+          An <b>AWS Lambda</b> node runs one job per invocation; it shows its concurrency slots instead of CPU/memory
+          and gets jobs only when no Docker node has room.</p>
         <div id="nodes"></div>
       </div>
       <div class="panel"><h2>Jobs running on nodes</h2><div id="nodes-jobs"></div></div>
@@ -413,18 +415,27 @@ function nodeCard(n) {
   } }, n.draining ? "Resume (accept jobs)" : "Drain");
   const d24 = n.last_24h;
   const kv = (k, v) => el("div", {}, el("div", { class: "k" }, k), el("div", {}, v));
+  const lam = n.kind === "lambda" ? (n.lambda || {}) : null;
   return el("div", { class: "node-card" },
     el("div", { class: "row", style: "align-items:center" },
       el("h3", { style: "margin:0" }, n.name), nodeStatusBadge(n),
+      lam ? el("span", { class: "badge" }, "AWS Lambda") : null,
       el("span", { class: "muted" }, n.url || ""),
       el("span", { style: "margin-left:auto" }, drainBtn)),
     !n.online ? el("p", { class: "s-error" },
       `Unreachable${n.down_since ? " since " + fmtTime(n.down_since) + " UTC (" + ago(n.down_since) + ")" : ""}: ${n.error || "no answer"}`) : null,
     el("div", { class: "stats", style: "margin:10px 0" },
-      el("div", { class: "stat" }, el("div", { class: "k" }, "CPU used"),
-        n.capacity ? meter(n.used.cpus, n.capacity.cpus, "cores") : meter(null)),
-      el("div", { class: "stat" }, el("div", { class: "k" }, "Memory used"),
-        n.capacity ? meter(n.used.mem_mb / 1024, n.capacity.mem_mb / 1024, "GB") : meter(null)),
+      ...(lam ? [
+        el("div", { class: "stat" }, el("div", { class: "k" }, "Concurrent jobs"),
+          n.slots ? meter(n.slots.used, n.slots.max, "slots") : meter(null)),
+        el("div", { class: "stat" }, el("div", { class: "k" }, "Per job"),
+          el("div", { class: "v", style: "font-size:15px" }, n.capacity ? `${n.capacity.cpus} vCPU · ${(n.capacity.mem_mb / 1024).toFixed(1)} GB` : "–")),
+      ] : [
+        el("div", { class: "stat" }, el("div", { class: "k" }, "CPU used"),
+          n.capacity ? meter(n.used.cpus, n.capacity.cpus, "cores") : meter(null)),
+        el("div", { class: "stat" }, el("div", { class: "k" }, "Memory used"),
+          n.capacity ? meter(n.used.mem_mb / 1024, n.capacity.mem_mb / 1024, "GB") : meter(null)),
+      ]),
       el("div", { class: "stat" }, el("div", { class: "v" }, busy), el("div", { class: "k" }, "jobs here")),
       el("div", { class: "stat" }, el("div", { class: "v" }, n.latency_ms == null ? "–" : Math.round(n.latency_ms) + " ms"),
         el("div", { class: "k" }, "latency")),
@@ -432,6 +443,14 @@ function nodeCard(n) {
         el("div", { class: "k" }, "last seen"))),
     mismatch ? el("p", { class: "s-timeout" }, `The node reports ${n.node_active_jobs} active job(s) but this server has ${busy} running there `
       + "(a job may be starting or finishing, or a container was left behind).") : null,
+    lam ? el("div", { class: "kv" },
+      kv("Function", `${lam.function || "–"} (${lam.region || "default region"})`),
+      kv("Network", lam.network === "internet" ? "internet (network jobs only)" : "none (VPC without internet; jobs without network only)"),
+      kv("Longest job", lam.max_job_seconds ? `${lam.max_job_seconds} s (function timeout ${lam.timeout_seconds} s)` : "–"),
+      kv("Images", n.allowed_images ? n.allowed_images.join(", ") : "–"),
+      kv("Reserved by jobs here", `${n.reserved.cpus} cores · ${(n.reserved.mem_mb / 1024).toFixed(1)} GB`),
+      kv("Last 24 h", `${d24.jobs} job(s): ${d24.succeeded} ok, ${d24.failed} failed/stopped, ${d24.lost} lost · ${d24.cpu_hours.toFixed(2)} CPU-hours`),
+      kv("Last check", n.last_check ? `${fmtTime(n.last_check)} UTC (${ago(n.last_check)})` : "–")) :
     el("div", { class: "kv" },
       kv("Free", n.free ? `${n.free.cpus} cores · ${(n.free.mem_mb / 1024).toFixed(1)} GB` : "–"),
       kv("Reserved by jobs here", `${n.reserved.cpus} cores · ${(n.reserved.mem_mb / 1024).toFixed(1)} GB`),

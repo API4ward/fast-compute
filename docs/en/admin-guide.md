@@ -24,7 +24,8 @@ Sign in with an admin token (kept only in that browser tab).
 - **Credits** (inside a user): top-up or adjust with hours (negative deducts) and a note; the
   user's ledger (top-ups, adjustments, job charges, balance after each).
 - **Jobs**: read-only list across users (filter by status).
-- **Nodes**: every compute node from `DOCKERSERVER_NODES`: online / offline / draining, when it was
+- **Nodes**: every compute node from `DOCKERSERVER_NODES` (AWS Lambda nodes are marked "AWS Lambda" and show
+  concurrency slots, per-job size, function, network and longest job instead of CPU/memory): online / offline / draining, when it was
   last seen and its latency, CPU and memory used / capacity as the node reports them (`/v1/info`),
   features, allowed images, the jobs this server has running there (metadata only) and 24 h counts
   (ok / failed / lost, CPU-hours). The page checks every node on open and every 20 s while it is

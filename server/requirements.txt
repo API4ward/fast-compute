@@ -7,3 +7,4 @@ pytest>=8
 httpx>=0.27
 mcp>=2.3
 cryptography>=42
+boto3>=1.34          # only needed for AWS Lambda nodes

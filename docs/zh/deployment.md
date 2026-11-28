@@ -102,6 +102,16 @@ JSON 外面要保留单引号。令牌变量为空的节点会被跳过（日志
 则 `queued` 并重试；比所有节点都大则提交时直接拒绝。按节点测得的运行时间计费，扣费后在节点上
 删除该任务。
 
+#### AWS Lambda 节点
+
+`"type": "lambda"` 的节点条目把任务发给 AWS Lambda 函数（每个任务一次调用），而不是节点 agent：
+`{"name":"aws-lambda","type":"lambda","function":"fast-compute-job","bucket":"…","region":"eu-west-2","max_concurrency":10,"network":"none"}`。
+AWS 凭证写在 `server/.env` 的 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`（或用 `"profile"`），服务端需要
+`boto3`（已在 `requirements.txt`）。只有 Docker 节点都没有空位时才会把任务派给 Lambda；任务必须放得进一次调用
+（函数内存，每 1769 MB 对应 1 个 vCPU），超时不超过函数超时 − 30 秒（最多 870 秒），镜像为 `python:3.12-slim`，
+网络设置要与函数一致（`none` = 无公网的隔离 VPC，`internet` = 有公网）。部署脚本、设计与限制见
+[`lambda-node/README.md`](../../lambda-node/README.md)。
+
 ### MCP 连接器的 OAuth
 
 claude.ai 和 Claude Desktop 的自定义连接器不支持自定义 header，而是使用 MCP OAuth 2.1。服务端用 MCP SDK

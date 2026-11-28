@@ -18,8 +18,7 @@ import time
 from datetime import timedelta
 from pathlib import Path
 
-from .backends import (Backend, BackendError, Handle, JobSpec, LocalDockerBackend, NoCapacity,
-                       RemoteNodeBackend)
+from .backends import Backend, BackendError, Handle, JobSpec, LocalDockerBackend, NoCapacity
 from .billing import available_uh, bill_job, cost_uh
 from .config import Settings
 from .models import ACTIVE_STATUSES, TERMINAL_STATUSES, Job, utcnow
@@ -61,12 +60,13 @@ class JobRunner:
             self._threads[job_id] = t
         t.start()
 
-    def never_fits(self, cpus: float, mem_mb: int, needs_env: bool = False) -> str | None:
+    def never_fits(self, cpus: float, mem_mb: int, needs_env: bool = False, **job) -> str | None:
+        """job: image, timeout_seconds, network (optional; nodes may refuse on those too)."""
         if self.pool.local is not None:
             return None
         if not self.pool.remote_enabled:
             return "no compute node is configured and local execution is disabled"
-        return self.pool.never_fits(cpus, mem_mb, needs_env)
+        return self.pool.never_fits(cpus, mem_mb, needs_env, **job)
 
     def stop(self, job_id: int, status: str = "stopped", note: str | None = None):
         with self._lock:
@@ -96,7 +96,9 @@ class JobRunner:
             for job in db.query(Job).filter(Job.status.in_(ACTIVE_STATUSES)):
                 finished = utcnow()
                 b = self.pool.by_name(job.node)
-                if isinstance(b, RemoteNodeBackend) and job.container_id:
+                if b is not None and not isinstance(b, LocalDockerBackend) and job.container_id:
+                    if hasattr(b, "adopt"):
+                        b.adopt(job.container_id)
                     h = Handle(b, job.container_id, b.name)
                     try:
                         st = b.status(h)
@@ -198,12 +200,13 @@ class JobRunner:
                 self._update(job_id, status="out_of_credits", finished_at=utcnow(),
                              error="not enough credits to start this job")
                 return None
-            reason = self.never_fits(spec.cpus, spec.mem_mb, bool(spec.env))
+            job_kw = dict(image=spec.image, timeout_seconds=spec.timeout_seconds, network=spec.network)
+            reason = self.never_fits(spec.cpus, spec.mem_mb, bool(spec.env), **job_kw)
             if reason:
                 self._update(job_id, status="error", error=reason, finished_at=utcnow())
                 return None
             errors = []
-            for b in self.pool.candidates(spec.cpus, spec.mem_mb, bool(spec.env)):
+            for b in self.pool.candidates(spec.cpus, spec.mem_mb, bool(spec.env), **job_kw):
                 self.pool.reserve(b, spec.cpus, spec.mem_mb)
                 try:
                     return b.start(spec, payload)
