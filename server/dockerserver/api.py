@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.routing import Route
 
@@ -22,7 +22,8 @@ from .billing import grant_missing_initial
 from .models import Site, Token, User, make_session_factory
 from .runner import JobRunner
 from .caddy import CaddyError, CaddyManager
-from .schemas import (AdminJobOut, CaddyEdit, CreditChange, EnvValue, JobOut, LedgerOut, SiteFile, TokenCreate, TokenIssued, TokenOut,
+from .lambda_admin import LambdaAdmin, LambdaConfigError
+from .schemas import (AdminJobOut, CaddyEdit, LambdaKeys, LambdaTest, CreditChange, EnvValue, JobOut, LedgerOut, SiteFile, TokenCreate, TokenIssued, TokenOut,
                       UserCreate, UserCreated, UserOut, UserUpdate, ledger_out)
 from .services import ServiceError, Services
 from .sites import SiteError, SiteManager
@@ -80,6 +81,10 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
                          enabled=settings.caddy_manage, transport=caddy_transport,
                          root=settings.caddy_root)
     sales = SalesAgent(settings)
+    pool_ = getattr(runner, "pool", None)
+    lam = LambdaAdmin(settings, pool_, svc.env.f) if pool_ is not None else None
+    if lam is not None:
+        lam.install_all()        # Lambda nodes saved in /admin-ui (data_dir/lambda.json)
     site_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=3.0), trust_env=False)
     with Session_() as db:
         grant_missing_initial(db, settings.default_credit_hours)
@@ -117,6 +122,7 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     app.state.services = svc
     app.state.caddy = caddy
     app.state.sales = sales
+    app.state.lambda_admin = lam
     if settings.oauth_enabled:
         from .oauth import DSOAuthProvider, HostCheck, build_oauth_routes
         svc.oauth = DSOAuthProvider(svc)
@@ -388,6 +394,55 @@ def create_app(settings: Settings | None = None, runner: JobRunner | None = None
     @app.get("/admin/caddy/backups/{name}", response_class=PlainTextResponse)
     def caddy_backup(name: str, _: Admin):
         return caddy.get_backup(name)
+
+    # ----- admin: AWS Lambda nodes (lambda_admin.py) -----
+    def _lam() -> LambdaAdmin:
+        if lam is None:
+            raise HTTPException(404, "no node pool")
+        return lam
+
+    def _lam_call(fn, *a, **kw):
+        try:
+            return fn(*a, **kw)
+        except LambdaConfigError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/admin/lambda")
+    def lambda_status(_: Admin):
+        """Saved AWS keys (hint only, never the values), Lambda nodes saved here and from .env."""
+        return _lam().status()
+
+    @app.put("/admin/lambda/credentials")
+    def lambda_keys(body: LambdaKeys, admin: Admin):
+        _lam_call(_lam().set_credentials, body.access_key_id, body.secret_access_key, admin.name)
+        return _lam().status()
+
+    @app.delete("/admin/lambda/credentials")
+    def lambda_keys_delete(admin: Admin):
+        _lam().clear_credentials(admin.name)
+        return _lam().status()
+
+    @app.put("/admin/lambda/nodes/{name}")
+    def lambda_node_put(name: str, body: dict, admin: Admin):
+        node = _lam_call(_lam().put_node, name, body, admin.name)
+        return {"node": node, "status": _lam().status()}
+
+    @app.delete("/admin/lambda/nodes/{name}")
+    def lambda_node_delete(name: str, db: DB, admin: Admin):
+        from .models import Job
+        running = db.scalar(select(func.count()).select_from(Job).where(
+            Job.node == name, Job.status.in_(("preparing", "running"))))
+        if not _lam_call(_lam().delete_node, name, admin.name, running or 0):
+            raise HTTPException(404, f"no saved Lambda node named {name}")
+        return _lam().status()
+
+    @app.post("/admin/lambda/test")
+    def lambda_test(body: LambdaTest, admin: Admin):
+        """Check credentials, function, S3 and (run_job) a real test job, step by step."""
+        if not body.name and not body.node:
+            raise HTTPException(400, "give name (a configured node) or node (unsaved settings)")
+        return _lam().diagnose(body.name, body.node, run_job=body.run_job, command=body.command,
+                               timeout_seconds=body.timeout_seconds)
 
     # ----- admin: compute nodes -----
     @app.get("/admin/nodes")

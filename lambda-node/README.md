@@ -53,8 +53,21 @@ REGION=eu-west-2 sh lambda-node/deploy.sh            # isolated, 2 GB, 10 concur
 REGION=eu-west-2 FUNCTION=fast-compute-net NETWORK=internet sh lambda-node/deploy.sh
 ```
 
-It prints the `DOCKERSERVER_NODES` entry and the command that creates the server's access key.
-Then, on the bridge, in `server/.env` (never in git):
+It prints the node settings and the command that creates the server's access key.
+
+**Easiest: configure it in `/admin-ui` → AWS Lambda** (no `.env` edit, no restart):
+1. paste the server's access key (stored encrypted in `data/lambda.json` with
+   `DOCKERSERVER_SECRET_KEY`, never shown again except the last 4 characters of the key id);
+2. *New node*: function, bucket, region, network, max concurrent jobs; *Save node* — it takes jobs at once;
+3. *Test & debug*: checks boto3, the key (STS), the function (state, memory, timeout, VPC vs network),
+   its async retry setting (must be 0), S3 read/write, and optionally runs a real test job and shows
+   its output. *Test these settings* in the node form checks settings before saving them.
+
+The same is available as an API for admins: `GET /admin/lambda`, `PUT|DELETE /admin/lambda/credentials`,
+`PUT|DELETE /admin/lambda/nodes/{name}`, `POST /admin/lambda/test`.
+
+Or, the old way, in `server/.env` on the bridge (never in git; a node there wins over one of the same
+name saved in the admin UI):
 
 ```sh
 AWS_ACCESS_KEY_ID=...

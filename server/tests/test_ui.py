@@ -5,7 +5,7 @@ from conftest import auth, make_user
 
 
 def test_pages_and_assets_served(client):
-    for path, marker in (("/admin-ui", "DockerServer admin"), ("/ui", "My jobs"), ("/", "fast-compute")):
+    for path, marker in (("/admin-ui", "fast-compute Admin"), ("/ui", "My jobs"), ("/", "fast-compute")):
         r = client.get(path)
         assert r.status_code == 200 and marker in r.text
         assert "frame-ancestors 'none'" in r.headers["content-security-policy"]

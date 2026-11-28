@@ -43,6 +43,7 @@ class NodePool:
         self.draining: set[str] = self._load_draining()
         self._hb_stop = threading.Event()
         self._hb_thread: threading.Thread | None = None
+        self._hb_started = False      # start_heartbeat() was called (lifespan)
 
     # ---- draining (persisted) ----
     def _load_draining(self) -> set[str]:
@@ -67,6 +68,23 @@ class NodePool:
         log.warning("node %s %s", name, "draining (no new jobs)" if draining else "accepting jobs again")
         return draining
 
+    # ---- nodes added / changed at run time (lambda_admin.py) ----
+    def put_node(self, b: Backend):
+        """Add a node, or replace the one with the same name. The list is swapped, never mutated,
+        so threads iterating the old list are unaffected; jobs already running keep their old
+        backend object (their Handle points to it)."""
+        with self._lock:
+            self.nodes = [x for x in self.nodes if x.name != b.name] + [b]
+        if self._hb_thread is None and self._hb_started:
+            self.start_heartbeat()
+
+    def remove_node(self, name: str) -> bool:
+        with self._lock:
+            before = len(self.nodes)
+            self.nodes = [x for x in self.nodes if x.name != name]
+            self._pending.pop(name, None)
+            return len(self.nodes) != before
+
     # ---- monitoring ----
     def probe_all(self, timeout: float = 4.0):
         """Probe every remote node once, in parallel."""
@@ -89,6 +107,7 @@ class NodePool:
         return out
 
     def start_heartbeat(self):
+        self._hb_started = True
         interval = getattr(self.settings, "node_heartbeat", 0)
         if not interval or interval <= 0 or not self.nodes or self._hb_thread is not None:
             return
@@ -105,6 +124,7 @@ class NodePool:
         self._hb_thread.start()
 
     def stop_heartbeat(self):
+        self._hb_started = False
         self._hb_stop.set()
         if self._hb_thread is not None:
             self._hb_thread.join(timeout=5)

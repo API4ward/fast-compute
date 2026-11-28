@@ -172,3 +172,16 @@ class CaddyEdit(BaseModel):
     content: str = Field(max_length=262144)
     # sha256 of the Caddyfile the editor was opened on; a mismatch (someone else changed it) -> 409
     base_sha256: str | None = Field(default=None, max_length=64)
+
+
+class LambdaKeys(BaseModel):
+    access_key_id: str = Field(min_length=16, max_length=128)
+    secret_access_key: str = Field(min_length=16, max_length=256)
+
+
+class LambdaTest(BaseModel):
+    name: str | None = None            # a saved / configured node ...
+    node: dict | None = None           # ... or unsaved settings from the form
+    run_job: bool = False              # also run a real test job (billed by AWS, not to a user)
+    command: str | None = Field(default=None, max_length=2000)
+    timeout_seconds: int = Field(default=30, ge=5, le=60)

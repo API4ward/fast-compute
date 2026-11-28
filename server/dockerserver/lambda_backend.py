@@ -48,6 +48,7 @@ class LambdaBackend(Backend):
                  start_timeout: float = 300, stale_after: float = 60, poll_interval: float = 2.0,
                  fresh_sandbox: bool = True, max_log_bytes: int = 1024 * 1024,
                  s3_endpoint_url: str | None = None, lambda_endpoint_url: str | None = None,
+                 aws_access_key_id: str | None = None, aws_secret_access_key: str | None = None,
                  lambda_client=None, s3_client=None, invoker=None):
         if network not in ("none", "internet"):
             raise ValueError(f"lambda node {name}: network must be 'none' or 'internet'")
@@ -62,6 +63,9 @@ class LambdaBackend(Backend):
         self.url = f"lambda://{region or 'default'}/{function}"
         self._lambda, self._s3 = lambda_client, s3_client
         self._profile = profile
+        # keys set by an admin in /admin-ui (lambda_admin.py); None = the standard boto3 chain
+        self._creds = ({"aws_access_key_id": aws_access_key_id, "aws_secret_access_key": aws_secret_access_key}
+                       if aws_access_key_id and aws_secret_access_key else {})
         self._s3_endpoint, self._lambda_endpoint = s3_endpoint_url, lambda_endpoint_url
         self._invoker = invoker          # tests: callable(event) instead of a real invoke
         self._lock = threading.Lock()
@@ -81,7 +85,20 @@ class LambdaBackend(Backend):
     # ---- AWS clients (credentials: the standard boto3 chain, e.g. AWS_* in server/.env) ----
     def _session(self):
         import boto3
-        return boto3.session.Session(profile_name=self._profile, region_name=self.region)
+        return boto3.session.Session(profile_name=None if self._creds else self._profile,
+                                     region_name=self.region, **self._creds)
+
+    def client(self, service: str):
+        """Another AWS client with this node's credentials and region (diagnostics: sts)."""
+        from botocore.config import Config
+        return self._session().client(service, config=Config(
+            retries={"max_attempts": 2, "mode": "standard"}, connect_timeout=5, read_timeout=15))
+
+    @property
+    def credential_source(self) -> str:
+        if self._creds:
+            return "admin"
+        return f"profile {self._profile}" if self._profile else "environment"
 
     @property
     def lam(self):

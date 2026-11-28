@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DockerServer Admin</title>
+<title>fast-compute Admin</title>
 <link rel="stylesheet" href="/static/common.css">
 </head>
 <body>
 <div id="login" class="panel hidden">
-  <h2>DockerServer admin</h2>
+  <a class="brand" href="/" title="fast-compute home"><span class="mark">fc</span><h2 style="margin:0">fast-compute</h2><span class="tag">Admin</span></a>
   <form id="login-form">
     <label class="muted" for="token-input">Admin access token</label>
     <input id="token-input" type="password" autocomplete="off" placeholder="ds_…" required>
@@ -20,13 +20,14 @@
 
 <div id="app" class="hidden">
   <header>
-    <h1>DockerServer admin</h1>
+    <a class="brand" href="/" title="fast-compute home"><span class="mark">fc</span><h1>fast-compute</h1><span class="tag">Admin</span></a>
     <nav>
       <button data-tab="users" class="active">Users</button>
       <button data-tab="jobs">Jobs</button>
       <button data-tab="nodes">Nodes</button>
       <button data-tab="usage">Usage</button>
       <button data-tab="sites">Sites</button>
+      <button data-tab="lambda">AWS Lambda</button>
       <button data-tab="caddy">Caddy</button>
     </nav>
     <span class="who" id="who"></span>
@@ -83,7 +84,8 @@
         <div id="nodes-summary"></div>
         <p class="muted">Capacity, used and free are what each node reports on <code>/v1/info</code>; "jobs here"
           are the jobs this server has running on it. A <b>draining</b> node gets no new jobs and its running
-          jobs finish normally. Nodes are configured in <code>server/.env</code> (<code>DOCKERSERVER_NODES</code>).
+          jobs finish normally. Docker nodes are configured in <code>server/.env</code> (<code>DOCKERSERVER_NODES</code>);
+          Lambda nodes also in the <b>AWS Lambda</b> tab.
           An <b>AWS Lambda</b> node runs one job per invocation; it shows its concurrency slots instead of CPU/memory
           and gets jobs only when no Docker node has room.</p>
         <div id="nodes"></div>
@@ -606,6 +608,139 @@ $("caddy-reload").addEventListener("click", async () => {
   catch (e) { showMsg($("caddy-result"), e.message); }
 });
 
+// ----- AWS Lambda -----
+let lamState = null;
+
+function lamBadge(n) {
+  if (n.shadowed_by_env) return el("span", { class: "badge s-timeout" }, "overridden by .env");
+  if (n.online == null) return el("span", { class: "badge" }, "not checked");
+  return n.online ? el("span", { class: "badge s-succeeded" }, n.draining ? "online · draining" : "online")
+                  : el("span", { class: "badge s-error" }, "offline");
+}
+
+async function loadLambda() {
+  try { lamState = await api("/admin/lambda"); } catch (e) { clear($("lam-nodes")).append(el("p", { class: "s-error" }, e.message)); return; }
+  const st = lamState, c = st.credentials;
+  clear($("lam-warn")).append(
+    !st.boto3 ? el("div", { class: "msg err" }, "boto3 is not installed on the server: run pip install -r requirements.txt in server/ and restart.") : null,
+    st.load_error ? el("div", { class: "msg err" }, st.load_error) : null);
+  clear($("lam-cred")).append(el("div", { class: "kv" },
+    kv("Saved key", c.set ? `${c.key_id_hint} (saved ${fmtTime(c.updated_at)} by ${c.updated_by || "?"})` : "none"),
+    kv("Used by nodes saved here", c.in_use),
+    kv("AWS_* keys in server/.env", c.environment_keys ? "yes (used by .env nodes)" : "no")));
+  $("lam-cred-clear").classList.toggle("hidden", !c.set);
+  const rows = st.nodes.map(n => el("tr", {},
+    td(el("b", {}, n.name)), td(lamBadge(n)), td(n.function, "wrap"), td(n.bucket, "wrap"), td(n.region || "default"),
+    td(n.network), td(n.max_concurrency, "num"), td(n.error || "", "wrap s-error"),
+    td(el("span", { class: "row", style: "gap:6px;flex-wrap:nowrap" },
+      el("button", { class: "btn", onclick: () => lamEdit(n) }, "Edit"),
+      el("button", { class: "btn", onclick: () => lamTest({ name: n.name }) }, "Test"),
+      el("button", { class: "btn danger", onclick: () => lamDelete(n.name) }, "Delete")))));
+  const envRows = st.env_nodes.map(n => el("tr", {},
+    td(el("b", {}, n.name)), td(n.online == null ? el("span", { class: "badge" }, "not checked") : lamBadge(n)),
+    td(n.function, "wrap"), td(n.bucket, "wrap"), td(n.region || "default"), td(n.network), td("–", "num"),
+    td(n.error || `server/.env · credentials: ${n.credentials}`, "wrap"),
+    td(el("button", { class: "btn", onclick: () => lamTest({ name: n.name }) }, "Test"))));
+  clear($("lam-nodes")).append(rows.length || envRows.length
+    ? table(["Name", "Status", "Function", "Bucket", "Region", "Network", { label: "Slots", num: true }, "Last error", ""], rows.concat(envRows))
+    : el("p", { class: "muted" }, "No Lambda node yet. Click New node."));
+  $("lam-env").textContent = st.env_nodes.length ? `${st.env_nodes.length} node(s) from server/.env (read-only here)` : "";
+  const sel = clear($("lam-test-node"));
+  st.nodes.concat(st.env_nodes).forEach(n => sel.append(el("option", { value: n.name }, n.name)));
+  if (!sel.options.length) sel.append(el("option", { value: "" }, "(no node — use Test these settings)"));
+}
+
+function lamFormData() {
+  const f = new FormData($("lam-form"));
+  const n = { function: f.get("function").trim(), bucket: f.get("bucket").trim(), region: f.get("region").trim(),
+    network: f.get("network"), max_concurrency: +f.get("max_concurrency"), images: f.get("images"),
+    prefix: f.get("prefix").trim(), start_timeout: +f.get("start_timeout"), stale_after: +f.get("stale_after"),
+    fresh_sandbox: f.get("fresh_sandbox") === "on" };
+  return { name: f.get("name").trim(), node: n };
+}
+
+function lamEdit(n) {
+  const form = $("lam-form"), d = Object.assign({}, lamState ? lamState.defaults : {}, n || {});
+  form.reset();
+  for (const k of ["name", "function", "bucket", "region", "network", "max_concurrency", "prefix", "start_timeout", "stale_after"])
+    if (d[k] != null) form.elements[k].value = d[k];
+  form.elements.images.value = (d.images || ["python:3.12-slim"]).join(", ");
+  form.elements.fresh_sandbox.checked = d.fresh_sandbox !== false;
+  form.elements.name.readOnly = !!n;
+  $("lam-edit-title").textContent = n ? `Edit node ${n.name}` : "New Lambda node";
+  $("lam-edit").classList.remove("hidden");
+  $("lam-edit").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function lamDelete(name) {
+  if (!confirm(`Delete Lambda node ${name}? It gets no new jobs from now on.`)) return;
+  try { await api(`/admin/lambda/nodes/${encodeURIComponent(name)}`, { method: "DELETE" }); loadLambda(); }
+  catch (e) { showMsg($("lam-nodes"), e.message); }
+}
+
+async function lamTest(body) {
+  const box = clear($("lam-test-result")), btn = $("lam-test-btn");
+  const f = new FormData($("lam-test-form"));
+  body = Object.assign({ run_job: f.get("run_job") === "on", timeout_seconds: +f.get("timeout_seconds") || 30,
+    command: f.get("command").trim() || null }, body);
+  box.append(el("p", { class: "muted" }, `Checking ${body.name || body.node.name}…` + (body.run_job ? " (the test job can take up to a minute)" : "")));
+  btn.disabled = true;
+  $("lam-test-result").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  try {
+    const r = await api("/admin/lambda/test", { method: "POST", body });
+    clear(box).append(
+      el("p", {}, el("b", {}, r.target || ""), " ", r.ok ? el("span", { class: "badge s-succeeded" }, "all checks passed")
+        : el("span", { class: "badge s-error" }, "a check failed"), el("span", { class: "muted" }, `  ${fmtTime(r.at)} UTC`)),
+      el("ol", { class: "steps" }, r.steps.map(s => el("li", { class: s.ok ? "ok" : "bad" },
+        el("div", {}, el("b", {}, s.ok ? "✓ " : "✗ ", s.step), el("span", { class: "muted" }, s.ms ? `  ${s.ms} ms` : "")),
+        el("div", { class: "wrap" }, s.detail || ""),
+        s.command ? el("div", { class: "muted" }, "command: ", el("code", {}, s.command)) : null,
+        s.logs != null ? el("pre", { class: "logs" }, s.logs || "(no output)") : null))));
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+  finally { btn.disabled = false; }
+}
+
+$("lam-refresh").addEventListener("click", loadLambda);
+$("lam-new").addEventListener("click", () => lamEdit(null));
+$("lam-form-cancel").addEventListener("click", () => $("lam-edit").classList.add("hidden"));
+$("lam-form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const { name, node } = lamFormData();
+  try {
+    await api(`/admin/lambda/nodes/${encodeURIComponent(name)}`, { method: "PUT", body: node });
+    $("lam-edit").classList.add("hidden");
+    await loadLambda();
+    $("lam-test-node").value = name;
+    showMsg($("lam-nodes"), `Saved ${name}. It takes jobs now — run the checks below to make sure it works.`, true);
+  } catch (e) { showMsg($("lam-form"), e.message); }
+});
+$("lam-form-test").addEventListener("click", () => {
+  if (!$("lam-form").reportValidity()) return;
+  const { name, node } = lamFormData();
+  lamTest({ node: Object.assign({ name }, node) });
+});
+$("lam-test-form").addEventListener("submit", ev => {
+  ev.preventDefault();
+  const name = $("lam-test-node").value;
+  if (!name) { showMsg($("lam-test-result"), "Save a node first, or use Test these settings in the node form."); return; }
+  lamTest({ name });
+});
+$("lam-cred-form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  try {
+    await api("/admin/lambda/credentials", { method: "PUT",
+      body: { access_key_id: f.get("access_key_id").trim(), secret_access_key: f.get("secret_access_key").trim() } });
+    ev.target.reset(); await loadLambda();
+    showMsg($("lam-cred"), "Key saved. Run the checks below to verify it.", true);
+  } catch (e) { showMsg($("lam-cred"), e.message); }
+});
+$("lam-cred-clear").addEventListener("click", async () => {
+  if (!confirm("Remove the saved AWS key? Nodes saved here then use the server's default AWS credentials.")) return;
+  try { await api("/admin/lambda/credentials", { method: "DELETE" }); loadLambda(); }
+  catch (e) { showMsg($("lam-cred"), e.message); }
+});
+
 function selectTab(name) { document.querySelector(`nav button[data-tab="${name}"]`).click(); }
 
 $("create-form").addEventListener("submit", async ev => {
@@ -626,8 +761,12 @@ $("job-status").addEventListener("change", loadJobs);
 $("usage-form").addEventListener("submit", loadUsage);
 $("sites-refresh").addEventListener("click", loadSites);
 
-setupTabs(tab => { nodesAuto(tab === "nodes"); if (tab === "nodes") loadNodes(); if (tab === "jobs") loadJobs(); if (tab === "usage") loadUsage(); if (tab === "users") loadUsers(); if (tab === "sites") loadSites(); if (tab === "caddy") loadCaddy({ keepEdits: true }); });
-initLogin({ requireAdmin: true, onReady: () => loadUsers() });
+setupTabs(tab => { try { history.replaceState(null, "", "#" + tab); } catch {} nodesAuto(tab === "nodes"); if (tab === "nodes") loadNodes(); if (tab === "jobs") loadJobs(); if (tab === "usage") loadUsage(); if (tab === "users") loadUsers(); if (tab === "sites") loadSites(); if (tab === "caddy") loadCaddy({ keepEdits: true }); if (tab === "lambda") loadLambda(); });
+initLogin({ requireAdmin: true, onReady: () => {
+  const t = location.hash.slice(1);   // stay on the tab you were on after a reload
+  if (t && t !== "users" && document.querySelector(`nav button[data-tab="${CSS.escape(t)}"]`)) selectTab(t);
+  loadUsers();
+} });
 </script>
 </body>
 </html>

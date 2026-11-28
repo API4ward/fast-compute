@@ -140,3 +140,7 @@ async function showJobDetail(container, job, { canStop = true, onChange } = {}) 
   try { logs.textContent = (await api(`/jobs/${job.id}/logs?tail=500`, { raw: true })) || "(empty)"; }
   catch (e) { logs.textContent = e.message; }
 }
+
+// Label + value pair for .kv grids.
+function kv(k, v) { return el("div", {}, el("div", { class: "k" }, k), el("div", {}, v)); }
+
