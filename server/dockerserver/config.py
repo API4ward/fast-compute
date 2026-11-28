@@ -48,11 +48,15 @@ class NodeConfig:
     token: str = field(repr=False)
     kind: str = "docker"                 # "docker" (computenode agent) or "lambda"
     options: dict = field(default_factory=dict)   # kind-specific settings (no secrets)
+    source: str = "env"                  # "env" (DOCKERSERVER_NODES) or "admin" (/admin-ui -> Settings)
 
 
 LAMBDA_KEYS = {"function", "bucket", "region", "prefix", "images", "max_concurrency", "network",
                "profile", "start_timeout", "stale_after", "fresh_sandbox", "s3_endpoint_url",
                "lambda_endpoint_url"}
+# What an admin may set for a Lambda node in /admin-ui -> Settings (admin_settings.py); the
+# AWS profile and the endpoint URLs stay .env-only.
+LAMBDA_ADMIN_KEYS = LAMBDA_KEYS - {"profile", "s3_endpoint_url", "lambda_endpoint_url"}
 
 
 def parse_nodes(raw: str | None) -> list[NodeConfig]:
@@ -62,8 +66,10 @@ def parse_nodes(raw: str | None) -> list[NodeConfig]:
     environment variable named by token_env. Nodes without a token are skipped (warned).
 
     AWS Lambda node: {"name", "type": "lambda", "function", "bucket", "region", ...} (see
-    lambda_backend.py for the optional keys). AWS credentials come from the standard boto3
-    chain, e.g. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in server/.env, or "profile"."""
+    lambda_backend.py for the optional keys). AWS credentials: "profile", else the key saved in
+    /admin-ui -> Settings, else the standard boto3 chain (e.g. AWS_ACCESS_KEY_ID /
+    AWS_SECRET_ACCESS_KEY in server/.env). Lambda nodes can also be added in /admin-ui ->
+    Settings (admin_settings.py); those are not listed here."""
     if not raw or not raw.strip():
         return []
     try:

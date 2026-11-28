@@ -1,7 +1,12 @@
 """AWS Lambda as a compute node (one Lambda invocation = one job).
 
-Configured as a DOCKERSERVER_NODES entry with "type": "lambda" (see config.py). The function
-is the image built from lambda-node/ (handler.py); deploy it with lambda-node/deploy.sh.
+Configured as a DOCKERSERVER_NODES entry with "type": "lambda" (see config.py), or added live
+in /admin-ui -> Settings (admin_settings.py). The function is the image built from lambda-node/
+(handler.py); deploy it with lambda-node/deploy.sh.
+
+AWS credentials: the node's `profile` (.env nodes only) > the access key saved in /admin-ui ->
+Settings (the `credentials` callable) > boto3's default chain (AWS_* in server/.env, an
+instance role, ...).
 
 How a job runs:
   start   -> workspace tar to s3://<bucket>/<prefix><job>/workspace.tar, then an async
@@ -37,6 +42,15 @@ log = logging.getLogger("dockerserver.lambda")
 MB_PER_VCPU = 1769          # Lambda gives 1 vCPU per 1769 MB of memory
 MAX_VCPUS = 6.0
 TIMEOUT_MARGIN = 30         # function timeout minus this = longest job timeout accepted
+# settings that can change while jobs run (reconfigure()); they apply to new jobs
+LIVE_KEYS = ("max_concurrency", "images", "network", "start_timeout", "stale_after", "fresh_sandbox")
+
+
+def function_name(function: str) -> str:
+    """The bare function name (e.g. for its log group) of any FunctionName form Lambda accepts:
+    <name>[:q], <account>:function:<name>[:q] or arn:aws:lambda:<region>:<account>:function:<name>[:q]."""
+    name = function.split(":function:", 1)[1] if ":function:" in function else function
+    return name.split(":", 1)[0]
 
 
 class LambdaBackend(Backend):
@@ -48,7 +62,8 @@ class LambdaBackend(Backend):
                  start_timeout: float = 300, stale_after: float = 60, poll_interval: float = 2.0,
                  fresh_sandbox: bool = True, max_log_bytes: int = 1024 * 1024,
                  s3_endpoint_url: str | None = None, lambda_endpoint_url: str | None = None,
-                 lambda_client=None, s3_client=None, invoker=None):
+                 lambda_client=None, s3_client=None, invoker=None, credentials=None,
+                 client_factory=None, source: str = "env"):
         if network not in ("none", "internet"):
             raise ValueError(f"lambda node {name}: network must be 'none' or 'internet'")
         self.name, self.function, self.bucket, self.region = name, function, bucket, region
@@ -64,6 +79,13 @@ class LambdaBackend(Backend):
         self._profile = profile
         self._s3_endpoint, self._lambda_endpoint = s3_endpoint_url, lambda_endpoint_url
         self._invoker = invoker          # tests: callable(event) instead of a real invoke
+        # callable -> {"aws_access_key_id", "aws_secret_access_key"} or None (admin Settings)
+        self.credentials = credentials
+        self._client_factory = client_factory   # tests: callable(service, region) -> client
+        self._injected = {"lambda": lambda_client is not None, "s3": s3_client is not None}
+        self._gen = 0                    # client generation: reset_clients() counts it up
+        self.source = source             # "env" (DOCKERSERVER_NODES) or "admin" (Settings)
+        self._retired = False            # replaced or removed in Settings: takes no new job
         self._lock = threading.Lock()
         self._inflight: set[str] = set()
         self._fn: dict | None = None     # last GetFunctionConfiguration answer (subset)
@@ -78,32 +100,113 @@ class LambdaBackend(Backend):
     def __repr__(self):
         return f"LambdaBackend({self.name!r}, {self.url!r})"
 
-    # ---- AWS clients (credentials: the standard boto3 chain, e.g. AWS_* in server/.env) ----
+    # ---- AWS clients (credentials: see the module docstring) ----
+    def credentials_source(self) -> str:
+        """"profile", "admin" (saved in Settings) or "env" (boto3's default chain)."""
+        if self._profile:
+            return "profile"
+        has = getattr(self.credentials, "available", None)
+        return "admin" if callable(has) and has() else "env"
+
     def _session(self):
         import boto3
-        return boto3.session.Session(profile_name=self._profile, region_name=self.region)
+        if self._profile:
+            return boto3.session.Session(profile_name=self._profile, region_name=self.region)
+        creds = self.credentials() if self.credentials is not None else None
+        return boto3.session.Session(region_name=self.region, **(creds or {}))
 
     @property
     def lam(self):
-        if self._lambda is None:
-            from botocore.config import Config
-            self._lambda = self._session().client(
-                "lambda", endpoint_url=self._lambda_endpoint,
-                config=Config(retries={"max_attempts": 3, "mode": "standard"},
-                              connect_timeout=5, read_timeout=30))
-        return self._lambda
+        while (c := self._lambda) is None:
+            gen = self._gen
+            if self._client_factory is not None:
+                c = self._client_factory("lambda", self.region)
+            else:
+                from botocore.config import Config
+                c = self._session().client(
+                    "lambda", endpoint_url=self._lambda_endpoint,
+                    config=Config(retries={"max_attempts": 3, "mode": "standard"},
+                                  connect_timeout=5, read_timeout=30))
+            self._keep("_lambda", c, gen)
+        return c
 
     @property
     def s3(self):
-        if self._s3 is None:
-            from botocore.config import Config
-            endpoint = self._s3_endpoint or (f"https://s3.{self.region}.amazonaws.com" if self.region else None)
-            self._s3 = self._session().client(
-                "s3", endpoint_url=endpoint,
-                config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"},
-                              retries={"max_attempts": 3, "mode": "standard"},
-                              connect_timeout=5, read_timeout=30))
-        return self._s3
+        while (c := self._s3) is None:
+            gen = self._gen
+            if self._client_factory is not None:
+                c = self._client_factory("s3", self.region)
+            else:
+                from botocore.config import Config
+                endpoint = self._s3_endpoint or (f"https://s3.{self.region}.amazonaws.com" if self.region else None)
+                c = self._session().client(
+                    "s3", endpoint_url=endpoint,
+                    config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"},
+                                  retries={"max_attempts": 3, "mode": "standard"},
+                                  connect_timeout=5, read_timeout=30))
+            self._keep("_s3", c, gen)
+        return c
+
+    def _keep(self, attr: str, client, gen: int):
+        """Cache a new client, unless reset_clients() ran while it was built: it may hold the
+        credentials from before the change, so the caller builds another."""
+        with self._lock:
+            if self._gen == gen and getattr(self, attr) is None:
+                setattr(self, attr, client)
+
+    def reset_clients(self):
+        """The saved AWS credentials changed: build new clients on next use (injected ones stay;
+        a call in progress finishes with the old client; one being built is not kept)."""
+        with self._lock:
+            self._gen += 1
+            if not self._injected["lambda"]:
+                self._lambda = None
+            if not self._injected["s3"]:
+                self._s3 = None
+
+    # ---- live changes (admin Settings) ----
+    def config(self) -> dict:
+        """This node's settings (no credentials), e.g. for diagnostics."""
+        return {"name": self.name, "function": self.function, "bucket": self.bucket,
+                "region": self.region, "prefix": self.prefix, "images": list(self.images),
+                "max_concurrency": self.max_concurrency, "network": self.network,
+                "start_timeout": self.start_timeout, "stale_after": self.stale_after,
+                "fresh_sandbox": self.fresh_sandbox, "profile": self._profile,
+                "s3_endpoint_url": self._s3_endpoint, "lambda_endpoint_url": self._lambda_endpoint}
+
+    def reconfigure(self, **opts):
+        """Change settings that running jobs do not depend on (LIVE_KEYS); new jobs use them."""
+        bad = set(opts) - set(LIVE_KEYS)
+        if bad:
+            raise ValueError(f"lambda node {self.name}: {sorted(bad)} cannot change while jobs run")
+        if opts.get("network", self.network) not in ("none", "internet"):
+            raise ValueError(f"lambda node {self.name}: network must be 'none' or 'internet'")
+        with self._lock:
+            if "max_concurrency" in opts:
+                self.max_concurrency = max(int(opts["max_concurrency"]), 1)
+            if "images" in opts:
+                self.images = list(opts["images"])
+            for k in ("network", "start_timeout", "stale_after", "fresh_sandbox"):
+                if k in opts:
+                    setattr(self, k, opts[k])
+
+    def active_count(self) -> int:
+        """Invocations this server has in flight here (jobs and admin test jobs)."""
+        with self._lock:
+            return len(self._inflight)
+
+    def retire_if_idle(self) -> bool:
+        """Take this backend out of service if nothing runs on it (it is being replaced or
+        removed): a later start() raises NoCapacity, so the scheduler moves on. False if busy."""
+        with self._lock:
+            if self._inflight:
+                return False
+            self._retired = True
+            return True
+
+    def unretire(self):
+        with self._lock:
+            self._retired = False
 
     def _key(self, job: str, name: str) -> str:
         return f"{self.prefix}{job}/{name}"
@@ -196,12 +299,16 @@ class LambdaBackend(Backend):
         if why:
             raise BackendError(f"lambda node {self.name}: {why}")
         with self._lock:
+            if self._retired:
+                raise NoCapacity(f"lambda node {self.name} was reconfigured")
             if len(self._inflight) >= self.max_concurrency:
                 raise NoCapacity(f"lambda node {self.name}: all {self.max_concurrency} slots busy")
             job = f"ds{spec.job_id}-{int(time.time())}"
             self._inflight.add(job)
+            # this job keeps the timeouts it started with: a change in Settings is for new jobs
+            timeouts = {"start_timeout": self.start_timeout, "stale_after": self.stale_after}
         try:
-            expires = int(spec.timeout_seconds + self.start_timeout + 900)
+            expires = int(spec.timeout_seconds + timeouts["start_timeout"] + 900)
             ws = node_workspace(payload)
             if ws:
                 self.s3.put_object(Bucket=self.bucket, Key=self._key(job, "workspace.tar"), Body=ws)
@@ -232,14 +339,17 @@ class LambdaBackend(Backend):
             raise BackendError(f"lambda node {self.name}: {type(e).__name__}: {e}") from e
         now = time.time()
         self.last_ok = now
-        return Handle(self, job, self.name, extra={"invoked": now, "etag": None, "changed": now})
+        return Handle(self, job, self.name, extra={"invoked": now, "etag": None, "changed": now, **timeouts})
 
     def _forget(self, job: str):
         with self._lock:
             self._inflight.discard(job)
 
-    def _get(self, job: str, name: str) -> tuple[bytes | None, str | None]:
-        """(body, etag); (None, None) if the object does not exist. Raises BackendError."""
+    def _get(self, job: str, name: str, denied_is_missing: bool = False) -> tuple[bytes | None, str | None]:
+        """(body, etag); (None, None) if the object does not exist. Raises BackendError.
+        denied_is_missing: also (None, None) for AccessDenied, which is what S3 answers for a
+        missing object when the caller may not s3:ListBucket (the server's IAM policy from
+        deploy.sh before Settings existed); the caller decides how long to believe that."""
         try:
             r = self.s3.get_object(Bucket=self.bucket, Key=self._key(job, name))
             return r["Body"].read(), r.get("ETag")
@@ -247,15 +357,23 @@ class LambdaBackend(Backend):
             code = getattr(e, "response", {}).get("Error", {}).get("Code") if hasattr(e, "response") else None
             if code in ("NoSuchKey", "404", "NotFound"):
                 return None, None
+            if denied_is_missing and code in ("AccessDenied", "403", "Forbidden"):
+                return None, None
             raise BackendError(f"lambda node {self.name}: S3 {type(e).__name__}: {e}") from e
 
     def _poll(self, h: Handle) -> ExecStatus | None:
         now = time.time()
-        invoked = h.extra.get("invoked", now)
+        # a job recovered after a restart has no "invoked": its start timeout counts from now;
+        # nor its own timeouts (start()): it uses the node's current ones
+        invoked = h.extra.setdefault("invoked", now)
+        start_timeout = h.extra.get("start_timeout", self.start_timeout)
+        stale_after = h.extra.get("stale_after", self.stale_after)
         try:
-            body, etag = self._get(h.id, "status.json")
+            # until the invocation first reports, a 403 may only mean "no status.json yet"
+            body, etag = self._get(h.id, "status.json", denied_is_missing="first_seen" not in h.extra)
         except BackendError as e:
             h.unreachable_since = h.unreachable_since or now
+            h.extra["read_error"] = str(e)        # shown by the admin's test job
             log.warning("job %s: %s", h.id, e)
             return None
         h.unreachable_since, h.last_seen = None, now
@@ -263,13 +381,14 @@ class LambdaBackend(Backend):
         if h.extra.get("final") is not None:
             return h.extra["final"]
         if body is None:
-            if now - invoked > self.start_timeout:
+            if now - invoked > start_timeout:
                 return self._final(h, ExecStatus(
                     finished=True, node_status="error",
-                    error=f"the Lambda function did not start the job within {int(self.start_timeout)} s"))
+                    error=f"the Lambda function did not start the job within {int(start_timeout)} s"))
             st = ExecStatus(finished=False, node_status="preparing")
             h.last_status = st
             return st
+        h.extra.setdefault("first_seen", now)    # the invocation reported (cold start over)
         if etag != h.extra.get("etag"):
             h.extra["etag"], h.extra["changed"] = etag, now
         try:
@@ -281,10 +400,10 @@ class LambdaBackend(Backend):
                      cpu_peak_pct=d.get("cpu_peak_pct"), mem_avg_mb=d.get("mem_avg_mb"),
                      mem_peak_mb=d.get("mem_peak_mb"))
         if status in ("preparing", "running"):
-            if now - h.extra.get("changed", now) > self.stale_after:
+            if now - h.extra.get("changed", now) > stale_after:
                 return self._final(h, ExecStatus(
                     finished=True, node_status="error", **stats,
-                    error=(f"the Lambda invocation stopped reporting for {int(self.stale_after)} s "
+                    error=(f"the Lambda invocation stopped reporting for {int(stale_after)} s "
                            "(out of memory, crashed, or hit the function timeout)")))
             st = ExecStatus(finished=False, node_status=status, **stats)
             h.last_status = st
@@ -332,13 +451,18 @@ class LambdaBackend(Backend):
             body = b"".join(body.splitlines(keepends=True)[-tail:])
         return body
 
-    def cleanup(self, h: Handle) -> None:
+    def cleanup(self, h: Handle) -> bool:
+        """Delete the job's files in S3 and free its slot. False if a delete failed (the files
+        then expire with the bucket's lifecycle rule)."""
+        ok = True
         try:
             for name in ("workspace.tar", "status.json", "output.log", "kill"):
                 self.s3.delete_object(Bucket=self.bucket, Key=self._key(h.id, name))
         except Exception as e:
+            ok = False
             log.warning("cleanup %s on %s: %s", h.id, self.name, e)
         self._forget(h.id)
+        return ok
 
     def adopt(self, job: str):
         """recover(): a job started by an earlier server process counts against the slots."""

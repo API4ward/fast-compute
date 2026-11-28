@@ -198,7 +198,7 @@ def test_admin_resource_needs_admin_token(srv):
     t = token(base, cid, grant_type="authorization_code", code=q["code"], redirect_uri=CALLBACK,
               code_verifier=q["_verifier"], resource=f"{base}/mcp-admin").json()
     r = mcp(base, "/mcp-admin", t["access_token"])
-    assert r.status_code == 200 and len(r.json()["result"]["tools"]) == 15
+    assert r.status_code == 200 and len(r.json()["result"]["tools"]) == 18   # incl. 3 Lambda tools
     assert mcp(base, "/mcp", t["access_token"]).status_code == 401      # bound to /mcp-admin
 
 

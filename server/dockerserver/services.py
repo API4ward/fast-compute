@@ -43,6 +43,7 @@ class Services:
         self.env = EnvStore(key)
         self.oauth = None  # DSOAuthProvider when OAuth is enabled (set by create_app)
         self.sites: SiteManager | None = None   # set by create_app
+        self.admin_settings = None   # admin_settings.AdminSettings (set by create_app)
 
     def authenticate(self, db: Session, token: str | None, client_ip: str,
                      resource_path: str | None = None) -> User:
@@ -471,6 +472,7 @@ class Services:
             info = h.get("info") or None
             nodes.append({
                 "name": name, "url": h.get("url"), "kind": h.get("kind", "docker"),
+                "source": h.get("source", "env"),     # "admin": added in /admin-ui -> Settings
                 "slots": info.get("slots") if info else None,
                 "lambda": ({k: info.get(k) for k in ("function", "region", "network", "timeout_seconds",
                                                      "max_job_seconds", "in_vpc", "architectures")}

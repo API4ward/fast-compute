@@ -3,7 +3,8 @@
 
 The advisor answers visitors' questions about fast-compute. It uses an LLM when one is
 configured (any OpenAI-compatible chat completions API: DOCKERSERVER_SALES_BASE_URL,
-DOCKERSERVER_SALES_MODEL, DOCKERSERVER_SALES_API_KEY) and otherwise answers from a
+DOCKERSERVER_SALES_MODEL, DOCKERSERVER_SALES_API_KEY, or the values saved in /admin-ui ->
+Settings, which override them field by field and apply at once) and otherwise answers from a
 small built-in FAQ, so the homepage always works. Everything here is public: no user data is
 ever given to the model, and each client IP is rate limited.
 """
@@ -22,6 +23,7 @@ import httpx
 
 log = logging.getLogger(__name__)
 
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
 MAX_TURNS = 16            # messages kept from the conversation (user + assistant)
 MAX_CHARS = 1500          # per message
 MAX_LEAD_FIELD = 500
@@ -153,6 +155,14 @@ class SalesError(Exception):
         self.status, self.message = status, message
 
 
+class LLMError(Exception):
+    """The provider failed or refused; the message never contains the API key."""
+
+
+def _scrub(text: str, key: str | None) -> str:
+    return text.replace(key, "***") if key and len(key) >= 8 else text
+
+
 class _RateLimiter:
     def __init__(self):
         self._hits: dict[str, deque] = defaultdict(deque)
@@ -198,20 +208,31 @@ def clean_messages(raw) -> list[dict]:
 
 
 class SalesAgent:
-    def __init__(self, settings):
+    def __init__(self, settings, store=None):
         self.s = settings
+        self.store = store        # admin_settings.SettingsStore: values saved in /admin-ui -> Settings
         self.limiter = _RateLimiter()
         self._http = None
         self._lead_lock = threading.Lock()
 
     # ----- configuration -----
+    def config(self) -> dict:
+        """Effective LLM settings, read at each request: saved in Settings first, then .env."""
+        s = self.s
+        saved = self.store.advisor() if self.store is not None else {}
+        return {"base_url": (saved.get("base_url") or s.sales_base_url or DEFAULT_BASE_URL).rstrip("/"),
+                "model": saved.get("model") or s.sales_model,
+                "max_tokens": int(saved.get("max_tokens") or s.sales_max_tokens),
+                "api_key": saved.get("api_key") or s.sales_api_key}
+
     @property
     def provider(self) -> str:
-        return "openai" if self.s.sales_api_key and self.s.sales_model else "faq"
+        c = self.config()
+        return "openai" if c["api_key"] and c["model"] else "faq"
 
     @property
     def model(self) -> str:
-        return self.s.sales_model
+        return self.config()["model"]
 
     def public_info(self) -> dict:
         return {"enabled": True, "mode": "llm" if self.provider != "faq" else "faq",
@@ -223,34 +244,64 @@ class SalesAgent:
         if not self.limiter.hit("chat:" + client_ip, self.s.sales_rate_limit, 3600):
             raise SalesError(429, "Too many questions from your network, please try again later.")
         question = msgs[-1]["content"]
-        if self.provider == "faq" or not self.limiter.hit("chat:*", self.s.sales_daily_limit, 86400):
+        cfg = self.config()
+        if not (cfg["api_key"] and cfg["model"]) \
+                or not self.limiter.hit("chat:*", self.s.sales_daily_limit, 86400):
             return {"reply": faq_answer(question, lang), "mode": "faq"}
         try:
-            text = await self._ask_llm(msgs)
-        except Exception as e:  # never surface provider errors to visitors
-            log.warning("sales LLM call failed (%s): %s", self.provider, type(e).__name__)
+            text = await self._ask_llm(msgs, cfg)
+        except LLMError as e:  # never surface provider errors to visitors
+            log.warning("sales LLM call failed: %s", str(e)[:300])
+            text = None
+        except Exception as e:  # noqa: BLE001
+            log.warning("sales LLM call failed: %s", type(e).__name__)
             text = None
         if not text:
             return {"reply": faq_answer(question, lang), "mode": "faq"}
         return {"reply": text.strip(), "mode": "llm"}
 
-    async def _ask_llm(self, msgs: list[dict]) -> str | None:
+    async def admin_test(self, question: str) -> dict:
+        """An admin's test question (Settings): no visitor rate limits; the provider's error is
+        returned (at most 500 characters, never containing the key)."""
+        cfg = self.config()
+        t0 = time.monotonic()
+        out = {"ok": True, "reply": None, "mode": "faq", "ms": None, "error": None}
+        if not (cfg["api_key"] and cfg["model"]):
+            out["reply"] = faq_answer(question)
+        else:
+            out["mode"] = "llm"
+            try:
+                out["reply"] = (await self._ask_llm([{"role": "user", "content": question[:MAX_CHARS]}],
+                                                    cfg)).strip()
+            except Exception as e:  # noqa: BLE001 - shown to the admin
+                err = str(e) if isinstance(e, LLMError) else f"{type(e).__name__}: {e}"
+                out.update(ok=False, error=_scrub(err, cfg["api_key"])[:500])
+        out["ms"] = round((time.monotonic() - t0) * 1000, 1)
+        return out
+
+    async def _ask_llm(self, msgs: list[dict], cfg: dict | None = None) -> str:
+        """The model's answer; LLMError when the provider fails or answers nothing."""
+        cfg = cfg or self.config()
         if self._http is None:
             self._http = httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=5.0))
-        base = (self.s.sales_base_url or "https://api.openai.com/v1").rstrip("/")
-        body = {"model": self.model, "max_tokens": self.s.sales_max_tokens,
+        base = cfg["base_url"]
+        body = {"model": cfg["model"], "max_tokens": cfg["max_tokens"],
                 "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *msgs]}
-        headers = {"Authorization": f"Bearer {self.s.sales_api_key}"}
+        headers = {"Authorization": f"Bearer {cfg['api_key']}"}
         r = await self._http.post(base + "/chat/completions", headers=headers, json=body)
         if r.status_code == 400 and "max_completion_tokens" in r.text:
             # Newer OpenAI models only accept max_completion_tokens.
             body["max_completion_tokens"] = body.pop("max_tokens")
             r = await self._http.post(base + "/chat/completions", headers=headers, json=body)
         if r.status_code >= 400:
-            log.warning("sales LLM HTTP %s: %s", r.status_code, r.text[:300])
-            return None
-        choice = r.json()["choices"][0]
-        return choice["message"].get("content")
+            raise LLMError(_scrub(f"HTTP {r.status_code}: {' '.join(r.text.split())}", cfg["api_key"])[:500])
+        try:
+            text = r.json()["choices"][0]["message"].get("content")
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            raise LLMError(_scrub(f"unexpected answer: {' '.join(r.text.split())}", cfg["api_key"])[:500])
+        if not text or not text.strip():
+            raise LLMError("the model returned an empty answer")
+        return text
 
     # ----- access requests -----
     @property

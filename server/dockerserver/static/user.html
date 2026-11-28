@@ -3,61 +3,89 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DockerServer</title>
+<title>fast-compute · Dashboard</title>
 <link rel="stylesheet" href="/static/common.css">
 </head>
 <body>
-<div id="login" class="panel hidden">
-  <h2>DockerServer</h2>
-  <form id="login-form">
-    <label class="muted" for="token-input">Access token</label>
-    <input id="token-input" type="password" autocomplete="off" placeholder="ds_…" required>
-    <button class="btn primary" type="submit">Sign in</button>
-    <p id="login-err" class="muted"></p>
-    <p class="muted">The token is kept in this tab's session storage only.</p>
-    <p><a href="/welcome">New here? How to connect and use fast-compute →</a></p>
-  </form>
+<div id="login" class="auth hidden">
+  <div class="glow g1"></div><div class="glow g2"></div>
+  <div class="auth-card">
+    <div class="auth-top">
+      <a class="brand" href="/"><span class="logo"><svg viewBox="2 2 28 28" aria-hidden="true"><path d="M17.5 6 9 18h6l-1.5 8L22 14h-6z" fill="#fff"/></svg></span><span>fast-compute</span></a>
+      <button class="btn ghost sm" type="button" data-lang-switch>中文</button>
+    </div>
+    <h1 data-i18n="login.title">Sign in to your dashboard</h1>
+    <p class="lead" data-i18n="login.sub">Use the access token (ds_…) your administrator gave you.</p>
+    <form id="login-form">
+      <label for="token-input" data-i18n="login.token">Access token</label>
+      <input id="token-input" type="password" autocomplete="off" placeholder="ds_…" required>
+      <button class="btn primary block" type="submit" data-i18n="login.submit">Sign in</button>
+      <p id="login-err" class="form-err" role="alert"></p>
+    </form>
+    <p class="muted small" data-i18n="login.session">The token is kept in this tab's session storage only.</p>
+    <div class="auth-links">
+      <a href="/welcome" data-i18n="login.new">New here? How to connect and use fast-compute →</a>
+      <a href="/" data-i18n="login.home">← Back to the homepage</a>
+    </div>
+  </div>
 </div>
 
 <div id="app" class="hidden">
-  <header>
-    <h1>DockerServer</h1>
-    <nav>
-      <button data-tab="welcome">Welcome</button>
-      <button data-tab="dashboard">Dashboard</button>
-    </nav>
-    <span class="who" id="who"></span>
-    <button class="btn" id="refresh">Refresh</button>
-    <button class="btn" id="logout">Sign out</button>
+  <header class="topbar">
+    <div class="topbar-in">
+      <a class="brand" href="/"><span class="logo"><svg viewBox="2 2 28 28" aria-hidden="true"><path d="M17.5 6 9 18h6l-1.5 8L22 14h-6z" fill="#fff"/></svg></span><span>fast-compute</span></a>
+      <nav class="tabs" data-i18n-aria="nav.label">
+        <button data-tab="welcome" data-i18n="tab.welcome">Welcome</button>
+        <button data-tab="dashboard" data-i18n="tab.dashboard">Dashboard</button>
+      </nav>
+      <span class="who-chip"><span class="avatar" id="who-avatar"></span><span id="who"></span></span>
+      <div class="top-act">
+        <button class="btn ghost sm" type="button" data-lang-switch>中文</button>
+        <button class="btn ghost sm" id="refresh" data-i18n-title="btn.refresh" data-i18n-aria="btn.refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7L20 8.5"/><path d="M20 3.5v5h-5"/></svg><span class="lbl" data-i18n="btn.refresh">Refresh</span></button>
+        <button class="btn ghost sm" id="logout" data-i18n="btn.signout">Sign out</button>
+      </div>
+    </div>
   </header>
-  <main>
+  <main class="page">
   <section data-tab="welcome" class="hidden" id="welcome"></section>
   <section data-tab="dashboard">
-    <div class="panel">
-      <div class="stats" id="stats"></div>
-      <p class="muted" id="limits"></p>
-      <p class="muted">1 credit-hour = 1 CPU core + 256 MB RAM for 1 hour. A job costs run time × max(cpus, mem_mb / 256).</p>
+    <div class="page-head">
+      <div>
+        <h1 data-i18n="dash.title">Dashboard</h1>
+        <p data-i18n="dash.desc">Your credits, jobs, environment variables and web sites.</p>
+      </div>
     </div>
-    <div class="panel"><h2>My jobs</h2><div id="jobs"></div></div>
-    <div class="panel">
-      <h2>Environment variables</h2>
-      <p class="muted">Injected into every job you run (a job's own <code>env</code> overrides them).
+    <div class="stat-grid" id="stats"></div>
+    <div class="limits">
+      <div class="chips" id="limits"></div>
+      <p class="muted small" data-i18n="dash.pricing">1 credit-hour = 1 CPU core + 256 MB RAM for 1 hour. A job costs run time × max(cpus, mem_mb / 256).</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2 data-i18n="dash.jobs">My jobs</h2><span class="muted small" data-i18n="dash.jobsHint">Click a job to see its details and logs.</span></div>
+      <div id="jobs"></div>
+    </div>
+    <div class="card hidden" id="job-detail"></div>
+    <div class="card">
+      <h2 data-i18n="env.title">Environment variables</h2>
+      <p class="card-desc" data-i18n-rich="env.desc">Injected into every job you run (a job's own env overrides them).
         Stored encrypted; only you can see the values — administrators cannot.</p>
       <div id="env"></div>
-      <form id="env-form" class="row" style="margin-top:12px">
-        <label>Name <input name="name" required pattern="[A-Za-z_][A-Za-z0-9_]{0,63}" placeholder="API_KEY"></label>
-        <label>Value <input name="value" type="password" autocomplete="off" maxlength="4096" style="width:320px"></label>
-        <button class="btn primary" type="submit">Save</button>
+      <form id="env-form" class="row" style="margin-top:14px">
+        <label><span data-i18n="env.name">Name</span><input name="name" required pattern="[A-Za-z_][A-Za-z0-9_]{0,63}" placeholder="API_KEY"></label>
+        <label style="flex:1 1 220px"><span data-i18n="env.value">Value</span><input name="value" type="password" autocomplete="off" maxlength="4096" style="width:100%"></label>
+        <button class="btn primary" type="submit" data-i18n="btn.save">Save</button>
       </form>
     </div>
-    <div class="panel">
-      <h2>My web sites</h2>
-      <p class="muted">Static sites you upload with the <code>put_site_file</code> / <code>publish_site</code>
+    <div class="card">
+      <h2 data-i18n="sites.title">My web sites</h2>
+      <p class="card-desc" data-i18n-rich="sites.desc">Static sites you upload with the put_site_file / publish_site
         tools. Each sleeps after an idle hour and wakes on the next visit.</p>
       <div id="sites"></div>
     </div>
-    <div class="panel hidden" id="job-detail"></div>
-    <div class="panel"><h2>Usage per day</h2><div id="per-day"></div></div>
+    <div class="card">
+      <h2 data-i18n="usage.title">Usage per day</h2>
+      <div id="per-day"></div>
+    </div>
   </section>
   </main>
 </div>
@@ -65,25 +93,167 @@
 <script src="/static/common.js"></script>
 <script src="/static/welcome.js"></script>
 <script>
+addI18n({
+  en: {
+    "page.title": "fast-compute · Dashboard",
+    "login.title": "Sign in to your dashboard",
+    "login.sub": "Use the access token (ds_…) your administrator gave you.",
+    "login.new": "New here? How to connect and use fast-compute →",
+    "nav.label": "Sections",
+    "tab.welcome": "Welcome", "tab.dashboard": "Dashboard",
+    "dash.title": "Dashboard",
+    "dash.desc": "Your credits, jobs, environment variables and web sites.",
+    "dash.pricing": "1 credit-hour = 1 CPU core + 256 MB RAM for 1 hour. A job costs run time × max(cpus, mem_mb / 256).",
+    "dash.jobs": "My jobs",
+    "dash.jobsHint": "Click a job to see its details and logs.",
+    "stat.balance": "Balance", "stat.available": "Available now", "stat.jobs": "Jobs run", "stat.spent": "Spent",
+    "stat.unit": "credit-hours", "stat.availableSub": "credit-hours, after running jobs", "stat.jobsSub": "since the account was created",
+    "lim.title": "Limits",
+    "lim.cpu": "≤ {v} CPU", "lim.mem": "≤ {v} MB", "lim.run": "≤ {v} s per job", "lim.conc": "{v} jobs at once",
+    "lim.netOn": "network allowed", "lim.netOff": "network off", "lim.sites": "up to {v} sites",
+    "env.title": "Environment variables",
+    "env.desc": "Injected into every job you run (a job's own `env` overrides them). Stored encrypted; only you can see the values — administrators cannot.",
+    "env.name": "Name", "env.value": "Value", "env.updated": "Updated",
+    "env.none": "No variables yet.",
+    "env.show": "Show values", "env.hide": "Hide values",
+    "env.confirmDelete": "Delete {name}?",
+    "sites.title": "My web sites",
+    "sites.desc": "Static sites you upload with the `put_site_file` / `publish_site` tools. Each sleeps after an idle hour and wakes on the next visit.",
+    "sites.site": "Site", "sites.address": "Address", "sites.state": "State", "sites.files": "Files", "sites.size": "Size",
+    "sites.visits": "Visits", "sites.last": "Last visit",
+    "sites.notPublished": "not published", "sites.awake": "awake", "sites.asleep": "asleep",
+    "sites.none": "No sites yet.",
+    "sites.confirmDelete": "Delete site {name} and all its files?",
+    "usage.title": "Usage per day",
+    "usage.chart": "Cost per day, last 30 days (UTC)",
+    "usage.max": "max {v} credit-hours",
+    "usage.aria": "Bar chart of cost per day over the last 30 days; highest {v} credit-hours. Use the arrow keys to read each day; every value is also in the table below.",
+    "usage.tipJobs": "{day} · {n} job(s)",
+    "usage.tipCost": "{v} credit-hours",
+    "usage.day": "Day", "usage.jobs": "Jobs", "usage.runtime": "Run time", "usage.cpuh": "CPU-hours", "usage.gbh": "GB-hours",
+    "usage.cost": "Cost h",
+    "usage.none": "No usage yet.",
+  },
+  zh: {
+    "page.title": "fast-compute · 控制台",
+    "login.title": "登录控制台",
+    "login.sub": "使用管理员发给你的访问令牌（ds_…）登录。",
+    "login.new": "第一次使用？看看如何连接和使用 fast-compute →",
+    "nav.label": "页面",
+    "tab.welcome": "欢迎", "tab.dashboard": "控制台",
+    "dash.title": "控制台",
+    "dash.desc": "你的额度、任务、环境变量和网站。",
+    "dash.pricing": "1 算力时 = 1 个 CPU 核 + 256 MB 内存运行 1 小时。任务费用 = 运行时间 × max(cpus, mem_mb / 256)。",
+    "dash.jobs": "我的任务",
+    "dash.jobsHint": "点击任务查看详情和日志。",
+    "stat.balance": "余额", "stat.available": "当前可用", "stat.jobs": "已运行任务", "stat.spent": "已消耗",
+    "stat.unit": "算力时", "stat.availableSub": "算力时，已扣除运行中的任务", "stat.jobsSub": "自开户以来",
+    "lim.title": "限额",
+    "lim.cpu": "≤ {v} CPU", "lim.mem": "≤ {v} MB", "lim.run": "每个任务 ≤ {v} 秒", "lim.conc": "同时 {v} 个任务",
+    "lim.netOn": "可联网", "lim.netOff": "不联网", "lim.sites": "最多 {v} 个网站",
+    "env.title": "环境变量",
+    "env.desc": "会注入到你运行的每个任务中（任务自己的 `env` 优先）。加密存储，只有你能看到值，管理员也看不到。",
+    "env.name": "名称", "env.value": "值", "env.updated": "更新时间",
+    "env.none": "还没有变量。",
+    "env.show": "显示值", "env.hide": "隐藏值",
+    "env.confirmDelete": "删除 {name}？",
+    "sites.title": "我的网站",
+    "sites.desc": "用 `put_site_file` / `publish_site` 工具上传的静态网站。闲置 1 小时后休眠，下次访问时自动唤醒。",
+    "sites.site": "站点", "sites.address": "地址", "sites.state": "状态", "sites.files": "文件数", "sites.size": "大小",
+    "sites.visits": "访问次数", "sites.last": "最近访问",
+    "sites.notPublished": "未发布", "sites.awake": "运行中", "sites.asleep": "休眠中",
+    "sites.none": "还没有网站。",
+    "sites.confirmDelete": "删除站点 {name} 及其全部文件？",
+    "usage.title": "每日用量",
+    "usage.chart": "近 30 天每日费用（UTC）",
+    "usage.max": "最高 {v} 算力时",
+    "usage.aria": "近 30 天每日费用柱状图，最高 {v} 算力时。可用方向键逐日查看；所有数值也在下方表格中。",
+    "usage.tipJobs": "{day} · {n} 个任务",
+    "usage.tipCost": "{v} 算力时",
+    "usage.day": "日期", "usage.jobs": "任务数", "usage.runtime": "运行时长", "usage.cpuh": "CPU 时", "usage.gbh": "GB 时",
+    "usage.cost": "费用（时）",
+    "usage.none": "还没有用量。",
+  },
+});
+document.title = t("page.title");
+
+function statCard(label, value, unit, hero) {
+  return el("div", { class: "stat-card" + (hero ? " hero" : "") },
+    el("div", { class: "k" }, label), el("div", { class: "v" }, value), el("div", { class: "u" }, unit));
+}
+
+// Cost per day over the last 30 days (UTC), one series; the table below holds every value.
+function costChart(perDay) {
+  const byDay = Object.fromEntries(perDay.map(d => [d.day, d]));
+  const now = new Date(), days = [];
+  for (let i = 29; i >= 0; i--)
+    days.push(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i)).toISOString().slice(0, 10));
+  const vals = days.map(d => (byDay[d] && byDay[d].cost_hours) || 0);
+  const max = Math.max(...vals);
+  if (!(max > 0)) return null;
+  const tip = el("div", { class: "chart-tip hidden", "aria-hidden": "true" });
+  const cols = days.map((d, i) => el("div", { class: "chart-col" },
+    el("div", { class: "chart-bar", style: `height:${vals[i] > 0 ? Math.max(2, vals[i] / max * 100).toFixed(1) : 0}%` })));
+  const plot = el("div", { class: "chart-plot" }, cols);
+  const chart = el("div", { class: "chart", tabindex: "0", role: "group", "aria-label": t("usage.aria", { v: fmtH(max, 3) }) },
+    el("div", { class: "chart-top" }, el("span", {}, t("usage.chart")), el("span", {}, t("usage.max", { v: fmtH(max, 3) }))),
+    plot,
+    el("div", { class: "chart-axis" }, el("span", {}, days[0].slice(5)), el("span", {}, days[14].slice(5)), el("span", {}, days[29].slice(5))),
+    tip);
+  let cur = -1;
+  function show(i) {
+    i = Math.max(0, Math.min(days.length - 1, i));
+    if (cur >= 0) cols[cur].classList.remove("on");
+    cur = i;
+    cols[i].classList.add("on");
+    const d = byDay[days[i]];
+    clear(tip).append(el("b", {}, t("usage.tipCost", { v: fmtH(vals[i], 3) })), t("usage.tipJobs", { day: days[i], n: d ? d.jobs : 0 }));
+    tip.classList.remove("hidden");
+    const bar = cols[i].firstChild, w = tip.offsetWidth, cw = chart.clientWidth;
+    const x = Math.min(Math.max(cols[i].offsetLeft + cols[i].offsetWidth / 2, w / 2), cw - w / 2);
+    tip.style.left = x + "px";
+    tip.style.top = (plot.offsetTop + plot.clientHeight - bar.offsetHeight) + "px";
+  }
+  function hide() { tip.classList.add("hidden"); if (cur >= 0) cols[cur].classList.remove("on"); cur = -1; }
+  cols.forEach((c, i) => c.addEventListener("pointerenter", () => show(i)));
+  plot.addEventListener("pointerleave", hide);
+  chart.addEventListener("focus", () => show(cur >= 0 ? cur : days.length - 1));
+  chart.addEventListener("blur", hide);
+  chart.addEventListener("keydown", ev => {
+    const step = { ArrowLeft: -1, ArrowRight: 1 }[ev.key];
+    if (step) { ev.preventDefault(); show((cur < 0 ? days.length - 1 : cur) + step); }
+    else if (ev.key === "Home") { ev.preventDefault(); show(0); }
+    else if (ev.key === "End") { ev.preventDefault(); show(days.length - 1); }
+  });
+  return chart;
+}
+
 async function load() {
   try {
     const [me, usage, jobs] = await Promise.all([api("/me"), api("/me/usage"), api("/jobs?limit=50")]);
-    const stat = (v, k) => el("div", { class: "stat" }, el("div", { class: "v" }, v), el("div", { class: "k" }, k));
     clear($("stats")).append(
-      stat(fmtH(usage.balance_hours, 3), "balance (credit-hours)"),
-      stat(fmtH(usage.available_hours, 3), "available now"),
-      stat(usage.total.jobs, "jobs run"),
-      stat(fmtH(usage.total.cost_hours, 3), "credit-hours spent"));
-    $("limits").textContent = `Limits: ${me.max_cpus} CPU · ${me.max_mem_mb} MB · ${me.max_run_seconds}s per job · `
-      + `${me.max_concurrent_jobs} at once · network ${me.allow_network ? "allowed" : "off"}`;
-    clear($("jobs")).append(jobsTable(jobs, { onSelect: j => showJobDetail($("job-detail"), j, { onChange: load }) }));
-    clear($("per-day")).append(usage.per_day.length ? table(
-      ["Day", { label: "Jobs", num: true }, { label: "Run time", num: true }, { label: "CPU-hours", num: true },
-       { label: "GB-hours", num: true }, { label: "Cost h", num: true }],
+      statCard(t("stat.balance"), fmtH(usage.balance_hours, 3), t("stat.unit"), true),
+      statCard(t("stat.available"), fmtH(usage.available_hours, 3), t("stat.availableSub")),
+      statCard(t("stat.jobs"), usage.total.jobs, t("stat.jobsSub")),
+      statCard(t("stat.spent"), fmtH(usage.total.cost_hours, 3), t("stat.unit")));
+    clear($("limits")).append(el("span", { class: "muted small" }, t("lim.title")),
+      el("span", { class: "chip" }, t("lim.cpu", { v: me.max_cpus })),
+      el("span", { class: "chip" }, t("lim.mem", { v: me.max_mem_mb })),
+      el("span", { class: "chip" }, t("lim.run", { v: me.max_run_seconds })),
+      el("span", { class: "chip" }, t("lim.conc", { v: me.max_concurrent_jobs })),
+      el("span", { class: "chip" + (me.allow_network ? "" : " off") }, me.allow_network ? t("lim.netOn") : t("lim.netOff")),
+      el("span", { class: "chip" }, t("lim.sites", { v: me.max_sites })));
+    clear($("jobs")).append(jobsTable(jobs, { onSelect: j => {
+      showJobDetail($("job-detail"), j, { onChange: load });
+      $("job-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+    } }));
+    clear($("per-day")).append(...(usage.per_day.length ? [costChart(usage.per_day), table(
+      [t("usage.day"), { label: t("usage.jobs"), num: true }, { label: t("usage.runtime"), num: true }, { label: t("usage.cpuh"), num: true },
+       { label: t("usage.gbh"), num: true }, { label: t("usage.cost"), num: true }],
       usage.per_day.slice().reverse().map(d => el("tr", {}, td(d.day), td(d.jobs, "num"), td(fmtDur(d.run_seconds), "num"),
-        td(fmtH(d.cpu_hours), "num"), td(fmtH(d.mem_gb_hours), "num"), td(fmtH(d.cost_hours), "num"))))
-      : el("p", { class: "muted" }, "No usage yet."));
-  } catch (e) { showMsg(document.querySelector("main"), e.message); }
+        td(fmtH(d.cpu_hours), "num"), td(fmtH(d.mem_gb_hours), "num"), td(fmtH(d.cost_hours), "num"))))]
+      : [el("p", { class: "empty" }, t("usage.none"))]).filter(Boolean));
+  } catch (e) { showMsg(document.querySelector("main"), errText(e)); }
 }
 function fmtBytes(b) {
   if (b < 1024) return b + " B";
@@ -94,33 +264,35 @@ async function loadSites() {
   const box = $("sites");
   try {
     const sites = await api("/me/sites");
-    clear(box).append(sites.length ? table(["Site", "Address", "State", { label: "Files", num: true },
-      { label: "Size", num: true }, { label: "Visits", num: true }, "Last visit", ""],
+    clear(box).append(sites.length ? table([t("sites.site"), t("sites.address"), t("sites.state"), { label: t("sites.files"), num: true },
+      { label: t("sites.size"), num: true }, { label: t("sites.visits"), num: true }, t("sites.last"), ""],
       sites.map(s => el("tr", {}, td(s.site),
-        td(s.published ? el("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.url) : el("span", { class: "muted" }, "not published"), "wrap"),
-        td(s.awake ? "awake" : "asleep"), td(s.file_count, "num"), td(fmtBytes(s.bytes_stored), "num"),
+        td(s.published ? el("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.url) : el("span", { class: "muted" }, t("sites.notPublished")), "wrap"),
+        td(el("span", { class: "badge " + (s.awake ? "s-running" : "s-stopped"), title: s.awake ? "awake" : "asleep" }, s.awake ? t("sites.awake") : t("sites.asleep"))),
+        td(s.file_count, "num"), td(fmtBytes(s.bytes_stored), "num"),
         td(s.requests, "num"), td(fmtTime(s.last_access_at)),
-        td(el("button", { class: "btn danger", onclick: async () => {
-          if (!confirm(`Delete site ${s.site} and all its files?`)) return;
+        td(el("button", { class: "btn sm danger", onclick: async () => {
+          if (!confirm(t("sites.confirmDelete", { name: s.site }))) return;
           try { await api(`/me/sites/${encodeURIComponent(s.site)}`, { method: "DELETE" }); loadSites(); }
-          catch (e) { showMsg(box, e.message); }
-        } }, "Delete"))))) : el("p", { class: "muted" }, "No sites yet."));
-  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+          catch (e) { showMsg(box, errText(e)); }
+        } }, t("btn.delete")))))) : el("p", { class: "empty" }, t("sites.none")));
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, errText(e))); }
 }
 async function loadEnv(reveal = false) {
   const box = $("env");
   try {
     const vars = await api(`/me/env${reveal ? "?reveal=true" : ""}`);
-    clear(box).append(vars.length ? table(["Name", "Value", "Updated", ""],
+    // el() skips null children; Element.append() would print "null"
+    clear(box).append(el("div", {}, vars.length ? table([t("env.name"), t("env.value"), t("env.updated"), ""],
       vars.map(v => el("tr", {}, td(el("code", {}, v.name)), td(v.value, "wrap"), td(fmtTime(v.updated_at)),
-        td(el("button", { class: "btn danger", onclick: async () => {
-          if (!confirm(`Delete ${v.name}?`)) return;
+        td(el("button", { class: "btn sm danger", onclick: async () => {
+          if (!confirm(t("env.confirmDelete", { name: v.name }))) return;
           try { await api(`/me/env/${encodeURIComponent(v.name)}`, { method: "DELETE" }); loadEnv(); }
-          catch (e) { showMsg(box, e.message); }
-        } }, "Delete"))))) : el("p", { class: "muted" }, "No variables yet."),
-      vars.length ? el("button", { class: "btn", style: "margin-top:8px",
-        onclick: () => loadEnv(!reveal) }, reveal ? "Hide values" : "Show values") : null);
-  } catch (e) { clear(box).append(el("p", { class: "s-error" }, e.message)); }
+          catch (e) { showMsg(box, errText(e)); }
+        } }, t("btn.delete")))))) : el("p", { class: "empty" }, t("env.none")),
+      vars.length ? el("button", { class: "btn sm", style: "margin-top:10px",
+        onclick: () => loadEnv(!reveal) }, reveal ? t("env.hide") : t("env.show")) : null));
+  } catch (e) { clear(box).append(el("p", { class: "s-error" }, errText(e))); }
 }
 $("env-form").addEventListener("submit", async ev => {
   ev.preventDefault();
@@ -128,7 +300,7 @@ $("env-form").addEventListener("submit", async ev => {
   try {
     await api(`/me/env/${encodeURIComponent(f.get("name"))}`, { method: "PUT", body: { value: f.get("value") } });
     ev.target.reset(); loadEnv();
-  } catch (e) { showMsg($("env"), e.message); }
+  } catch (e) { showMsg($("env"), errText(e)); }
 });
 $("refresh").addEventListener("click", () => { load(); loadSites(); });
 const TAB_KEY = "fastcompute_ui_tab";

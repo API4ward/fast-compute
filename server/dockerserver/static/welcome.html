@@ -7,13 +7,27 @@
 <link rel="stylesheet" href="/static/common.css">
 </head>
 <body>
-<header>
-  <h1>fast-compute</h1>
-  <span class="who"><a href="/ui">Dashboard</a></span>
+<header class="topbar">
+  <div class="topbar-in">
+    <a class="brand" href="/"><span class="logo"><svg viewBox="2 2 28 28" aria-hidden="true"><path d="M17.5 6 9 18h6l-1.5 8L22 14h-6z" fill="#fff"/></svg></span><span>fast-compute</span></a>
+    <div class="top-act" style="margin-left:auto">
+      <button class="btn ghost sm" type="button" data-lang-switch>中文</button>
+      <a class="btn ghost sm hide-sm" href="/" data-i18n="w.home">Homepage</a>
+      <a class="btn primary sm" href="/ui" data-i18n="w.dashboard">Dashboard</a>
+    </div>
+  </div>
 </header>
-<main id="welcome"></main>
+<main id="welcome" class="page narrow"></main>
 <script src="/static/common.js"></script>
 <script src="/static/welcome.js"></script>
-<script>renderWelcome(document.getElementById("welcome"), { dashboardLink: true });</script>
+<script>
+addI18n({
+  en: { "w.title": "fast-compute · Welcome", "w.home": "Homepage", "w.dashboard": "Dashboard" },
+  zh: { "w.title": "fast-compute · 快速上手", "w.home": "首页", "w.dashboard": "控制台" },
+});
+applyI18n();
+document.title = t("w.title");
+renderWelcome(document.getElementById("welcome"), { dashboardLink: true });
+</script>
 </body>
 </html>

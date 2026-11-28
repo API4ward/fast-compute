@@ -1,11 +1,13 @@
 """Web pages are served, and the REST calls they make work for the right roles."""
 import re
+from pathlib import Path
 
 from conftest import auth, make_user
 
 
 def test_pages_and_assets_served(client):
-    for path, marker in (("/admin-ui", "DockerServer admin"), ("/ui", "My jobs"), ("/", "fast-compute")):
+    for path, marker in (("/admin-ui", 'data-tab="settings"'), ("/ui", "My jobs"), ("/", "fast-compute"),
+                         ("/welcome", 'id="welcome"')):
         r = client.get(path)
         assert r.status_code == 200 and marker in r.text
         assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
@@ -85,13 +87,14 @@ def test_assets_are_cache_busted(client):
 
 
 def test_job_tables_show_image(client):
-    # /ui uses jobsTable (common.js), /admin-ui uses adminJobsTable (admin.html)
+    # /ui uses jobsTable (common.js), /admin-ui uses adminJobsTable (admin.html); headers are translated
     js = client.get("/static/common.js").text
     i = js.index("function jobsTable")
-    assert '"Image"' in js[i:i + 600] and "td(j.image)" in js[i:i + 1500]
+    assert 't("col.image")' in js[i:i + 600] and "td(j.image)" in js[i:i + 1500]
+    assert '"col.image": "Image"' in js and '"col.image": "镜像"' in js
     html = client.get("/admin-ui").text
     i = html.index("function adminJobsTable")
-    assert '"Image"' in html[i:i + 600] and "td(j.image)" in html[i:i + 1200]
+    assert 't("col.image")' in html[i:i + 600] and "td(j.image)" in html[i:i + 1200]
 
 
 def test_welcome_page_public(client):
@@ -115,3 +118,175 @@ def test_user_ui_has_welcome_tab(client):
 def test_admin_has_nodes_tab(client):
     html = client.get("/admin-ui").text
     assert 'data-tab="nodes"' in html and "/admin/nodes" in html and "function loadNodes" in html
+
+
+STATIC = Path(__file__).resolve().parent.parent / "dockerserver" / "static"
+
+
+def _dict_blocks(text):
+    """The addI18n({en: {...}, zh: {...}}) blocks of a file as (en_keys, zh_keys) lists."""
+    out = []
+    for m in re.finditer(r"addI18n\(\{", text):
+        en_i = text.index("en: {", m.end())
+        zh_i = text.index("zh: {", en_i)
+        end = text.index("});", zh_i)
+        out.append((re.findall(r'"([\w.-]+)":', text[en_i:zh_i]), re.findall(r'"([\w.-]+)":', text[zh_i:end])))
+    return out
+
+
+def _used_keys(text):
+    keys = set(re.findall(r'\btr?\("([\w.-]+)"(?!\s*\+)', text))
+    keys |= set(re.findall(r'data-i18n(?:-rich|-ph|-title|-aria)?="([\w.-]+)"', text))
+    return keys
+
+
+def test_i18n_dictionaries_complete():
+    # every dictionary has the same keys in English and Chinese, in the same order, without duplicates,
+    # and every literal key a page uses (t("..."), data-i18n="...") is defined for that page
+    common = (STATIC / "common.js").read_text()
+    pages = {"admin.html": ["admin-i18n.js", "admin-settings.js"], "user.html": ["welcome.js"],
+             "welcome.html": ["welcome.js"]}
+    for page, extra in pages.items():
+        texts = [(STATIC / page).read_text()] + [(STATIC / f).read_text() for f in extra]
+        defined = set()
+        for text in [common] + texts:
+            for en, zh in _dict_blocks(text):
+                assert len(en) == len(set(en)) and len(zh) == len(set(zh)), f"duplicate keys ({page})"
+                assert set(en) == set(zh), (page, sorted(set(en) ^ set(zh)))
+                assert en == zh, (page, next(f"{a} / {b}" for a, b in zip(en, zh) if a != b))
+                defined |= set(en)
+        used = set().union(*(_used_keys(x) for x in [common] + texts))
+        assert not used - defined, (page, sorted(used - defined))
+    # dynamic keys (status pills, diagnostics steps, ...) exist too
+    admin = (STATIC / "admin-i18n.js").read_text()
+    for k in ("status.succeeded", "status.out_of_credits", "status.killed_by_admin"):
+        assert f'"{k}"' in common
+    for k in ("node.online", "node.draining", "node.offline", "set.src.admin", "set.src.env", "set.src.none",
+              "set.st.ok", "set.st.warn", "set.st.fail", "set.st.skip", "set.phase.finished", "set.phase.error",
+              "set.logs.m15", "set.logs.m1440", "set.mode.llm", "set.mode.faq", "set.step.presigned"):
+        assert f'"{k}"' in admin, k
+
+
+def test_language_switch_and_brand(client):
+    js = client.get("/static/common.js").text
+    # the choice is shared with the homepage and the welcome guide
+    assert 'LANG_KEY = "fastcompute_lang"' in js and "function t(" in js and "data-lang-switch" in js
+    assert "document.documentElement.lang" in js
+    assert "fastcompute_lang" in client.get("/static/home.js").text
+    assert "LANG" in client.get("/static/welcome.js").text
+    for page in ("/ui", "/admin-ui", "/welcome"):
+        html = client.get(page).text
+        assert "data-lang-switch" in html and "fast-compute" in html and "DockerServer" not in html
+        assert 'href="/"' in html   # brand links back to the homepage
+    admin = client.get("/admin-ui").text
+    for tab in ("users", "jobs", "nodes", "usage", "sites", "caddy", "settings"):
+        assert f'nav button[data-tab="{tab}"]' not in admin   # (setupTabs selects them generically)
+        assert f'<button data-tab="{tab}"' in admin and f'<section data-tab="{tab}"' in admin
+
+
+def test_admin_settings_tab_uses_the_api(client):
+    html = client.get("/admin-ui").text
+    assert re.search(r'src="/static/admin-settings\.js\?v=[0-9a-f]{12}"', html)
+    assert re.search(r'src="/static/admin-i18n\.js\?v=[0-9a-f]{12}"', html)
+    for id_ in ("set-aws", "set-lambda", "set-deploy", "set-advisor", "settings-error"):
+        assert f'id="{id_}"' in html
+    js = client.get("/static/admin-settings.js").text
+    for path in ('"/admin/settings"', '"/admin/settings/aws"', '"/admin/settings/aws/check"',
+                 '"/admin/settings/lambda/nodes"', '"/admin/settings/lambda/validate"',
+                 "/admin/settings/lambda/nodes/${enc(name)}/diagnose", "/admin/settings/lambda/nodes/${enc(name)}/test-job",
+                 "/admin/settings/lambda/tests/${enc(id)}", "/admin/settings/lambda/nodes/${enc(name)}/logs?minutes=",
+                 '"/admin/settings/advisor"', '"/admin/settings/advisor/test"', "lambda-node/deploy.sh"):
+        assert path in js, path
+    # the secret fields are never pre-filled and every call shows a readable error
+    assert 'name: "secret_access_key", type: "password"' in js and 'name: "api_key", type: "password"' in js
+    assert "errText(e)" in js and "function errText" in client.get("/static/common.js").text
+
+
+def test_dashboards_build_dom_without_innerhtml(client):
+    # server and AWS data only ever goes into the page as text
+    html_sink = re.compile(r"\.(?:inner|outer)HTML\b|insertAdjacentHTML|document\.write")
+    for asset in ("common.js", "admin-settings.js", "admin-i18n.js", "welcome.js"):
+        assert not html_sink.search(client.get(f"/static/{asset}").text), asset
+    for page in ("/ui", "/admin-ui", "/welcome"):
+        html = client.get(page).text
+        assert not html_sink.search(html), page
+        # CSP default-src 'self': no external scripts, styles, fonts or images
+        assert not re.search(r'(?:src|href)="(?:https?:)?//', html), page
+
+
+def _js_string(text, key):
+    """A JS string literal `key: "..."` of a file, unescaped (the SET_PAT patterns)."""
+    return re.search(rf'\n\s*{key}: "(.+?)",', text).group(1).replace("\\\\", "\\")
+
+
+def test_deploy_helper_function_name_rule():
+    # deploy.sh also names the ECR repository and the "<name>-exec" IAM role (64 characters at most) after
+    # the function, so the deploy helper takes only names all three accept; the node form keeps Lambda's
+    # own rule (any function name or an ARN). The page's regexes are checked here as written.
+    js = (STATIC / "admin-settings.js").read_text()
+    rule = re.compile(re.search(r"const DEPLOY_FN_RE = /(.+)/;", js).group(1))
+    attr = re.compile(f"(?:{_js_string(js, 'deployFn')})")     # the input's pattern, with minlength/maxlength
+    assert 'pattern: SET_PAT.deployFn, minlength: "2", maxlength: "59"' in js and "DEPLOY_FN_RE.test(fn)" in js
+    for name in ("fast-compute-job", "ab", "a1_b2-c3", "job2", "x" * 59):
+        assert rule.match(name) and attr.fullmatch(name), name
+    for name in ("FastCompute", "_job", "fast-compute-job-", "a", "fast--compute", "fast.compute", "fast compute",
+                 "x" * 60):
+        assert not rule.match(name), name
+        assert not (attr.fullmatch(name) and 2 <= len(name) <= 59), name
+    node_fn = re.compile(f"(?:{_js_string(js, 'fn')})")
+    for fn in ("FastCompute", "fast-compute-job", "arn:aws:lambda:eu-west-2:123456789012:function:fast-compute-job:live"):
+        assert node_fn.fullmatch(fn), fn
+
+
+def test_settings_forms_send_what_the_api_takes(client, admin_token):
+    js = (STATIC / "admin-settings.js").read_text()
+    # The advisor form sends an empty "max tokens" as null: the server/.env value, not saved here. It offers
+    # to remove the API key only when one is saved here ("saved"; has_api_key also counts a server/.env key).
+    a = client.put("/admin/settings/advisor", headers=auth(admin_token),
+                   json={"base_url": None, "model": "m-1", "max_tokens": None, "api_key": None}).json()
+    assert a["max_tokens"] == a["env"]["max_tokens"] and a["saved"] == ["model"]
+    assert 'max_tokens: maxTok.value.trim() === "" ? null :' in js
+    assert 'const dropKey = (a.saved || []).includes("api_key") ?' in js
+    # The node form sends empty images / prefix / timeouts as [] / "" / null, on Add and on Edit (where the
+    # server merges the body over the saved node): both mean the defaults.
+    from dockerserver.admin_settings import LAMBDA_DEFAULTS, validate_node
+    saved = {"name": "lam1", "function": "fast-compute-job", "bucket": "fast-compute-jobs-1-eu-west-2",
+             "region": "eu-west-2", "images": ["node:22-slim"], "prefix": "fast-compute/x/", "start_timeout": 120,
+             "stale_after": 30}
+    empty = {"images": [], "prefix": "", "start_timeout": None, "stale_after": None}
+    assert {k: validate_node({**saved, **empty})[k] for k in empty} == {k: LAMBDA_DEFAULTS[k] for k in empty}
+    assert "images: images(), prefix: f.prefix.value.trim(), start_timeout: optNum(f.start_timeout)" in js
+
+
+def test_api_errors_keep_the_server_message():
+    # Caddy's refusal of a config (Apply, "Load file into Caddy") ends with the cause, so api() passes the
+    # server's "detail" on whole; only a body without one (e.g. a proxy's HTML error page) is cut.
+    js = (STATIC / "common.js").read_text()
+    body = js[js.index("async function api("):js.index("function errText")]
+    assert "detail.slice" not in body and "detail.substring" not in body
+    assert re.search(r"text\.length > \d{4} \? text\.slice\(0, \d{4}\)", body)
+
+
+def test_admin_tab_strip_fade():
+    # On phones the admin tabs scroll sideways: setupTabs marks an edge with more tabs behind it, common.css
+    # fades that edge, and revealTab keeps the active tab clear of the fade - the same width in both files -
+    # when a tab is clicked (also selectTab and the restore after a reload) and when the strip appears.
+    js, css = (STATIC / "common.js").read_text(), (STATIC / "common.css").read_text()
+    fade = re.search(r"const TAB_FADE = (\d+);", js).group(1)
+    rules = re.findall(r"\.side-nav\.more-(?:left|right)[^{]*\{([^}]*)\}", css)
+    assert len(rules) == 3 and all(set(re.findall(r"(\d+)px", r)) == {fade} and "mask-image" in r for r in rules), rules
+    setup = js[js.index("function setupTabs("):js.index("function jobsTable(")]
+    assert "revealTab(b)" in setup and "tabEdges(nav)" in setup
+    observer = setup[setup.index("new ResizeObserver("):setup.index(".observe(nav)")]
+    assert "revealTab(a)" in observer and "tabEdges(nav)" in observer
+
+
+def test_settings_script_skips_null_children():
+    # Element.append(null) would print "null" in the page: admin-settings.js builds its optional
+    # parts with addKids / setKids (which skip null like el()) instead of calling append directly.
+    js = (STATIC / "admin-settings.js").read_text()
+    direct = [ln.strip() for ln in js.splitlines() if ".append(" in ln and "//" not in ln.split(".append(")[0]]
+    assert direct == [
+        "function addKids(node, ...kids) { for (const c of kids.flat()) if (c != null) node.append(c); return node; }",
+        'document.body.append(el("datalist", { id: "aws-regions" }, AWS_REGIONS.map(r => el("option", { value: r }))));',
+    ]
